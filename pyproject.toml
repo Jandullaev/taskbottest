@@ -1,0 +1,11 @@
+[project]
+name = "taskbot"
+version = "0.1.0"
+description = "Telegram bot for task management"
+
+[tool.setuptools]
+packages = ["app", "config"]
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
