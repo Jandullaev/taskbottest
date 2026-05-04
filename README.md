@@ -1,39 +1,42 @@
-# 🤖 TaskBot AI — Telegram Task Manager
+# TaskBot AI — Telegram Task Manager
 
-A smart Telegram bot for personal task management, powered by **Google Gemini AI**.  
+A smart Telegram bot for personal task management, powered by **Google Gemini AI**.
 Create tasks in plain English, get auto-categorization, priority prediction, deadline reminders, and a daily productivity digest — all without leaving Telegram.
 
 ---
 
-## ✨ Features
+## Features
 
 | Feature | Description |
 |---|---|
-| 🤖 **AI Task Creation** | Describe tasks in plain English — Gemini extracts title, deadline, category & priority automatically |
-| 🏷️ **Auto-Categorization** | Classifies every task into: work / study / personal / health / finance / general |
-| ⚡ **Priority Prediction** | AI suggests high / medium / low based on urgency language and deadline proximity |
-| ⏰ **Smart Reminders** | Sends a notification 30 minutes before every task deadline |
-| ☀️ **Daily Digest** | Morning summary at 9 AM — top pending tasks + AI-generated motivational message |
-| 📊 **Productivity Stats** | Completion rate, overdue count, top category, and personalized coaching |
-| 🗂️ **Full Task CRUD** | Create, list, filter, edit, complete, and delete tasks |
+| **AI Task Creation** | Describe tasks in plain English — Gemini extracts title, deadline, category & priority automatically |
+| **Auto-Categorization** | Classifies every task into: work / study / personal / health / finance / general |
+| **Priority Prediction** | AI suggests high / medium / low based on urgency language and deadline proximity |
+| **Smart Reminders** | Sends a notification 30 minutes before every task deadline |
+| **Daily Digest** | Morning summary at 9 AM — top pending tasks + AI-generated motivational message |
+| **Productivity Stats** | Completion rate, overdue count, top category, and personalized coaching |
+| **Full Task CRUD** | Create, list, filter, view, edit, complete, and delete tasks |
+| **Inline Task Actions** | Tap a task in the list to view full details with Done / Edit / Delete inline buttons |
+| **Timezone-Aware Deadlines** | Deadlines are stored in UTC and displayed in each user's configured timezone |
 
 ---
 
-## 🛠️ Tech Stack
+## Tech Stack
 
 | Layer | Technology |
 |---|---|
 | Language | Python 3.10+ |
-| Bot Framework | python-telegram-bot 20.7 (async) |
+| Bot Framework | python-telegram-bot 22.6 (async) |
 | AI / NLP | Google Gemini API via `google-genai` |
 | Database | SQLite via `aiosqlite` (async, local file) |
 | Scheduler | APScheduler 3.x (AsyncIOScheduler) |
 | Timezones | pytz |
 | Config | python-dotenv |
+| Testing | pytest + pytest-asyncio + pytest-cov |
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 taskbot/
@@ -52,17 +55,23 @@ taskbot/
 │   │
 │   ├── bot/
 │   │   ├── __init__.py
-│   │   ├── handlers.py      # All command & conversation handlers
-│   │   └── reminders.py     # Deadline alerts & daily digest jobs
+│   │   ├── handlers.py      # Command handlers (/start, /mytasks, /done, /stats, …)
+│   │   ├── conversations.py # ConversationHandlers for /addtask and /edittask flows
+│   │   ├── keyboards.py     # ReplyKeyboard and InlineKeyboard builders
+│   │   ├── constants.py     # Shared string constants and callback-data prefixes
+│   │   └── reminders.py     # Deadline alerts & daily digest scheduler jobs
 │   │
 │   ├── core/
 │   │   ├── __init__.py
 │   │   ├── database.py      # Async SQLite CRUD layer
-│   │   └── formatters.py    # MarkdownV2 message formatting helpers
+│   │   ├── formatters.py    # MarkdownV2 message formatting helpers
+│   │   └── logger.py        # Logging configuration
 │   │
 │   └── services/
 │       ├── __init__.py
 │       └── ai_service.py    # Google Gemini integration
+│
+├── tests/                   # 353 unit tests (pytest-asyncio), 81% coverage
 │
 └── data/
     └── taskbot.db           # Auto-created on first run (gitignored)
@@ -70,7 +79,7 @@ taskbot/
 
 ---
 
-## ⚙️ Environment Variables
+## Environment Variables
 
 Copy `.env.example` to `.env` and fill in your values:
 
@@ -80,8 +89,8 @@ cp .env.example .env
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | ✅ Yes | — | Get from [@BotFather](https://t.me/BotFather) on Telegram |
-| `GEMINI_API_KEY` | ✅ Yes | — | Get free from [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) |
+| `TELEGRAM_BOT_TOKEN` | Yes | — | Get from [@BotFather](https://t.me/BotFather) on Telegram |
+| `GEMINI_API_KEY` | Yes | — | Get free from [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) |
 | `GEMINI_MODEL` | No | `gemini-1.5-flash` | Use `gemini-1.5-pro` for higher quality |
 | `DATABASE_PATH` | No | `data/taskbot.db` | Path to SQLite file |
 | `DEFAULT_TIMEZONE` | No | `Asia/Tashkent` | Fallback timezone for reminders |
@@ -89,8 +98,8 @@ cp .env.example .env
 
 **Example `.env`:**
 ```
-TELEGRAM_BOT_TOKEN
-GEMINI_API_KEY
+TELEGRAM_BOT_TOKEN=<your-telegram-token>
+GEMINI_API_KEY=<your-gemini-key>
 GEMINI_MODEL=gemini-1.5-flash
 DEFAULT_TIMEZONE=Asia/Tashkent
 DAILY_SUMMARY_HOUR=9
@@ -98,7 +107,7 @@ DAILY_SUMMARY_HOUR=9
 
 ---
 
-## 🚀 Installation & Running Locally
+## Installation & Running Locally
 
 ### Step 1 — Get the code
 
@@ -150,7 +159,7 @@ Open Telegram, find your bot, and send `/start`.
 
 ---
 
-## 📋 Bot Commands
+## Bot Commands
 
 ### Task Creation
 | Command | Description |
@@ -161,9 +170,10 @@ Open Telegram, find your bot, and send `/start`.
 ### Task Management
 | Command | Description |
 |---|---|
-| `/mytasks` | List all your active tasks |
+| `/mytasks` | List all your active tasks (tap any task ID to view full details) |
 | `/mytasks pending` | Filter by status: `pending`, `done`, `in_progress` |
 | `/mytasks work` | Filter by category: `work`, `study`, `personal`, `health`, `finance`, `general` |
+| `/mytask <id>` | View full details for a single task — e.g. `/mytask 3` |
 | `/done <id>` | Mark a task as completed — e.g. `/done 3` |
 | `/edittask <id>` | Edit any field of a task — e.g. `/edittask 5` |
 | `/deletetask <id>` | Delete a task with confirmation prompt — e.g. `/deletetask 2` |
@@ -178,7 +188,17 @@ Open Telegram, find your bot, and send `/start`.
 
 ---
 
-## 🧠 AI Examples
+## Task Detail View
+
+When you tap a task ID in `/mytasks`, or use `/mytask <id>`, the bot shows a full task card with three inline action buttons:
+
+- **Done** — marks the task complete immediately
+- **Edit** — opens the edit flow for any field (title, description, category, priority, deadline, status)
+- **Delete** — prompts for confirmation before deleting
+
+---
+
+## AI Examples
 
 Send any of these to `/addtask_ai`:
 
@@ -216,7 +236,7 @@ Pay electricity bill sometime this week
 
 ---
 
-## 🗄️ Database Schema
+## Database Schema
 
 The SQLite database is created automatically at `data/taskbot.db` on first run.
 
@@ -233,27 +253,25 @@ id | user_id | title | description | status | category | priority | deadline | c
 - `status`: `pending` | `in_progress` | `done` | `cancelled`
 - `category`: `work` | `study` | `personal` | `health` | `finance` | `general`
 - `priority`: `high` | `medium` | `low`
+- `deadline`: stored as UTC ISO-8601 (`YYYY-MM-DDTHH:MM:SS`), displayed in the user's configured timezone
 
 ---
 
-## 📝 Notes
+## Running Tests
+
+```bash
+pytest tests/ -v --cov=app --cov-report=term-missing
+```
+
+Current status: **353 / 353 passing**, ~81% coverage.
+
+---
+
+## Notes
 
 - All data is stored **locally** in SQLite — no external database or cloud storage required
 - Each user's tasks are fully isolated by their Telegram `user_id`
 - Deadline reminders fire **30 minutes before** the deadline, at most once per hour per task
 - The daily digest respects each user's individual timezone setting
 - The bot uses Telegram's **MarkdownV2** formatting throughout
-
-
-Let's change the logic the bot.
-
-1) there are some promlems with responses in this commands:
-   - /addtask
-   - /addtask_ai
-   - /edittask <id>
-   - /stats
-   - /settimezode
-  There is no reponses when successfully created task
-2) add new '/mytask <id>' to display single task
-3) if user sends '/mytasks' should display list of the tasks, and every task must id which is clickable, when user clicks the id, and displays the full information of a task, under the task must be options which is called 'Done', 'Edit', 'Delete'. every button must work correctly.
 

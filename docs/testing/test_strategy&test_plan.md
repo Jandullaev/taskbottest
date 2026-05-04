@@ -65,9 +65,9 @@ This test strategy defines the overall approach for testing the TaskBot Telegram
 #### Automated Testing
 - **Framework**: pytest for unit and integration tests
 - **Async Support**: pytest-asyncio for async function testing
-- **Database Testing**: In-memory SQLite or test database fixtures
-- **Mocking**: Mock external API calls (OpenAI)
-- **Coverage**: Aim for >80% code coverage on critical modules
+- **Database Testing**: Real SQLite temp file per test via patched `DB_PATH` (`unittest.mock.patch`)
+- **Mocking**: `unittest.mock.patch` for `_gemini` (Gemini AI), `db.*` functions in reminders
+- **Coverage**: Core modules (keyboards, reminders, database, ai_service) at 73–100%; overall 41%
 
 #### Manual Testing
 - **Platform**: Telegram mobile and web clients
@@ -171,47 +171,57 @@ This test strategy defines the overall approach for testing the TaskBot Telegram
 
 ### Test Items
 
-#### Module: database.py
-- `create_user()` — user creation with validation
-- `get_user()` — user retrieval and not found cases
-- `update_user()` — user profile updates
-- `delete_user()` — user deletion and cascade effects
-- `add_task()` — task creation with various inputs
-- `get_task()` — task retrieval by ID
-- `update_task()` — task status and content updates
-- `delete_task()` — task deletion
-- `list_tasks()` — task listing with filtering and sorting
-- `clear_completed()` — bulk operation on completed tasks
+#### Module: database.py (`app/core/database.py`)
+- `init_db()` — schema creation, idempotency
+- `upsert_user()` — insert new user, update existing
+- `get_user()` — retrieval by ID, not-found case
+- `update_user_preferences()` — timezone/language update, no-op on empty
+- `get_all_users()` — empty list, multiple users
+- `create_task()` — all fields, defaults, returns new ID
+- `get_task()` — retrieval, wrong-user isolation
+- `get_user_tasks()` — status/category filters, priority ordering, cancelled exclusion
+- `update_task()` — single/multiple fields, wrong user, unknown fields
+- `delete_task()` — success, not-found, wrong user
+- `mark_task_reminded()` — sets reminded_at, idempotent
+- `get_user_stats()` — totals, completion rate, top category
 
-#### Module: ai_service.py
-- `summarize_task()` — task summarization quality
-- `generate_suggestions()` — suggestion generation
-- `process_ai_response()` — response parsing and validation
-- `handle_api_errors()` — error handling and retry logic
+#### Module: ai_service.py (`app/services/ai_service.py`)
+- `_safe_json()` — valid JSON, markdown fences, embedded JSON, invalid input
+- `count_tokens()` — returns int, proportional to length
+- `TokenTracker` — accumulation, cost calculation, stats string
+- `parse_task_from_text()` — mocked Gemini; category/priority defaults on invalid values
+- `auto_categorize()` — all 6 categories, trailing period, exception fallback
+- `predict_priority()` — all 3 priorities, deadline param, exception fallback
+- `generate_daily_motivation()` — response passthrough, exception fallback
 
-#### Module: formatters.py
-- `format_task()` — task display formatting
-- `format_task_list()` — list display with pagination
-- `format_message()` — message formatting with escape characters
-- `bold_text()` — markdown formatting
-- `italic_text()` — markdown formatting
-- `code_block()` — code formatting
+#### Module: keyboards.py (`app/bot/keyboards.py`)
+- `main_menu_keyboard()` — all 6 buttons present
+- `back_keyboard()` — back button
+- `filters_keyboard()` — all status + category filters including ✅ Done
+- `timezone_keyboard()` — globe prefix, UTC, back button
+- `task_action_keyboard()` — Done/Edit/Delete/Back
+- `delete_confirm_keyboard()` — Yes/Cancel buttons
+- `task_list_keyboard()` — inline buttons, callback data format, truncation
+- `_edit_field_keyboard()` — all 6 fields, cancel button
 
-#### Module: handlers.py (All 10 Commands)
-- `/start` — bot initialization and user greeting
-- `/help` — command help display
-- `/add_task` — task creation via command
-- `/list_tasks` — display user's task list
-- `/complete_task` — mark task as complete
-- `/delete_task` — remove task
-- `/edit_task` — update task content
-- `/view_reminders` — display reminder settings
-- `/set_reminder` — create or update reminder
-- `/cancel` — operation cancellation
+#### Module: conversations.py (`app/bot/conversations.py`) — parse_deadline
+- Keyword shortcuts: today, tomorrow, next week
+- Relative: in N days/hours/weeks
+- Weekday names: all 7, next-week logic for same-day
+- Absolute formats: ISO, slash d/m/y, dot d.m.y, dash d-m-y, US m/d/y
+- Error paths: garbage input, empty string, hints in error message
+- Wizard inline keyboards: _category_inline, _priority_inline, _skip_inline
 
-#### Module: reminders.py
-- `schedule_reminder()` — reminder scheduling logic
-- `execute_reminder()` — reminder notification delivery
+#### Module: handlers.py (`app/bot/handlers.py`) — utility layer
+- `_delete()` — None input, success, exception swallowing
+- `_safe_edit()` — success, "not modified" swallowed, "can't be edited" swallowed, other BadRequest re-raised
+- State constants: unique values, EDIT_FIELDS completeness
+- `_TIMEZONE_MAP`, `_FILTER_MAP`: content and format validation
+
+#### Module: reminders.py (`app/bot/reminders.py`)
+- `create_scheduler()` — returns AsyncIOScheduler, 2 jobs with correct trigger types
+- `check_deadlines()` — empty tasks, message count per task, mark_reminded called, chat_id, failure resilience
+- `send_daily_summaries()` — no users, zero-task skip, DB error, per-user error, invalid timezone
 
 ### Test Deliverables
 

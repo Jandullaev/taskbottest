@@ -6,7 +6,6 @@ Handles all DB operations for users and tasks.
 import aiosqlite
 import logging
 import os
-from datetime import datetime
 from typing import Optional, List, Dict, Any
 
 from config.settings import DATABASE_PATH as DB_PATH
@@ -195,7 +194,7 @@ async def get_user_tasks(
     if priority:
         query += " AND priority = ?"
         params.append(priority)
-    query += " ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, deadline ASC NULLS LAST"
+    query += " ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, deadline ASC NULLS LAST LIMIT 50"
 
     try:
         async with aiosqlite.connect(DB_PATH) as db:
@@ -215,8 +214,7 @@ async def update_task(task_id: int, user_id: int, **fields) -> bool:
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return False
-    updates["updated_at"] = datetime.utcnow().isoformat()
-    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    set_clause = ", ".join(f"{k} = ?" for k in updates) + ", updated_at = datetime('now')"
     values = list(updates.values()) + [task_id, user_id]
     try:
         async with aiosqlite.connect(DB_PATH) as db:
@@ -265,9 +263,10 @@ async def get_due_tasks() -> List[Dict[str, Any]]:
                 JOIN users u ON t.user_id = u.user_id
                 WHERE t.status IN ('pending', 'in_progress')
                   AND t.deadline IS NOT NULL
-                  AND t.deadline <= datetime('now', '+30 minutes')
-                  AND t.deadline >= datetime('now', '-5 minutes')
-                  AND (t.reminded_at IS NULL OR t.reminded_at < datetime('now', '-60 minutes'))
+                  AND t.deadline <= strftime('%Y-%m-%dT%H:%M:%S', 'now', '+30 minutes')
+                  AND t.deadline >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-5 minutes')
+                  AND (t.reminded_at IS NULL
+                       OR t.reminded_at < strftime('%Y-%m-%dT%H:%M:%S', 'now', '-60 minutes'))
                 """
             ) as cur:
                 rows = await cur.fetchall()

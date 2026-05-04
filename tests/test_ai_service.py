@@ -1,287 +1,336 @@
 """
-tests/test_ai_service.py — Unit tests for app/services/ai_service.py
-
-Tests natural language parsing and AI response handling.
+tests/test_ai_service.py — Tests for app/services/ai_service.py
+Pure logic tests (no network): _safe_json, count_tokens, TokenTracker,
+and mocked-AI tests for the higher-level parsing functions.
 """
 
 import pytest
-from unittest.mock import patch, AsyncMock, MagicMock
-import json
-from datetime import datetime, timedelta
+from unittest.mock import patch
+
+from app.services.ai_service import (
+    _safe_json,
+    count_tokens,
+    TokenTracker,
+    parse_task_from_text,
+    auto_categorize,
+    predict_priority,
+    generate_daily_motivation,
+)
 
 
-class TestTaskParsing:
-    """Tests for natural language task parsing."""
-    
-    @pytest.mark.asyncio
-    async def test_parse_task_basic(self, mock_gemini_api):
-        """TC_AI_001: Parse simple task from natural language."""
-        with patch('app.services.ai_service._get_client', return_value=mock_gemini_api):
-            # This would call the actual parse_task_from_text function
-            # For now, simulating the expected behavior
-            
-            input_text = "Submit quarterly report by Friday, urgent"
-            
-            # Expected output structure
-            expected = {
-                "title": "Submit quarterly report",
-                "category": "work",
-                "priority": "high",
-            }
-            
-            # Mock would return this
-            mock_response = MagicMock()
-            mock_response.text = json.dumps(expected)
-            mock_gemini_api.models.generate_content.return_value = mock_response
-            
-            assert "quarterly report" in input_text.lower()
-    
-    @pytest.mark.asyncio
-    async def test_parse_task_category_inference(self):
-        """TC_AI_002: Verify correct category inference from context."""
-        test_cases = [
-            ("Study for math exam next Monday", "study"),
-            ("Doctor appointment Wednesday", "health"),
-            ("Pay rent by month end", "finance"),
-            ("Team meeting Thursday", "work"),
-            ("Buy groceries tomorrow", "personal"),
-        ]
-        
-        for input_text, expected_category in test_cases:
-            # Test would parse and verify category
-            assert expected_category in ["study", "health", "finance", "work", "personal"]
-    
-    @pytest.mark.asyncio
-    async def test_parse_task_with_invalid_input(self, mock_gemini_api):
-        """TC_AI_003: Handle malformed input gracefully."""
-        with patch('app.services.ai_service._get_client', return_value=mock_gemini_api):
-            input_text = "xyz abc 123 !@#$%"
-            
-            # Should return None or fallback
-            mock_response = MagicMock()
-            mock_response.text = "invalid json"
-            mock_gemini_api.models.generate_content.return_value = mock_response
-            
-            # Test would verify graceful handling
-            assert isinstance(input_text, str)
-    
-    def test_parse_task_with_deadline(self):
-        """Test deadline extraction from natural language."""
-        test_cases = [
-            ("Due tomorrow", "tomorrow"),
-            ("By Friday 3 PM", "Friday"),
-            ("Next Monday morning", "Monday"),
-            ("In 3 days", "3 days"),
-            ("March 25 at 2 PM", "March"),
-        ]
-        
-        for input_text, deadline_hint in test_cases:
-            assert deadline_hint.lower() in input_text.lower()
+# =============================================================================
+#  _safe_json
+# =============================================================================
+
+class TestSafeJson:
+    def test_valid_json_object(self):
+        assert _safe_json('{"key": "value"}') == {"key": "value"}
+
+    def test_json_with_markdown_json_fence(self):
+        text = '```json\n{"title": "test"}\n```'
+        result = _safe_json(text)
+        assert result == {"title": "test"}
+
+    def test_json_with_plain_fence(self):
+        text = '```\n{"title": "test"}\n```'
+        assert _safe_json(text) == {"title": "test"}
+
+    def test_json_embedded_in_prose(self):
+        text = 'Here is the result: {"title": "buy milk"} end.'
+        result = _safe_json(text)
+        assert result is not None
+        assert result["title"] == "buy milk"
+
+    def test_invalid_json_returns_none(self):
+        assert _safe_json("this is not json at all") is None
+
+    def test_empty_string_returns_none(self):
+        assert _safe_json("") is None
+
+    def test_nested_json(self):
+        assert _safe_json('{"a": {"b": 1}}') == {"a": {"b": 1}}
+
+    def test_null_value(self):
+        assert _safe_json('{"deadline": null}') == {"deadline": None}
+
+    def test_trailing_backtick_stripped(self):
+        result = _safe_json('{"key": "val"}`')
+        assert result == {"key": "val"}
+
+    def test_json_with_all_task_fields(self):
+        text = '{"title":"Buy milk","description":"","category":"personal","priority":"low","deadline":null}'
+        result = _safe_json(text)
+        assert result["title"] == "Buy milk"
+        assert result["category"] == "personal"
+        assert result["deadline"] is None
 
 
-class TestAIErrorHandling:
-    """Tests for AI service error handling."""
-    
-    @pytest.mark.asyncio
-    async def test_api_error_graceful_handling(self, mock_gemini_api):
-        """TC_AI_004: Handle API errors without crashing."""
-        with patch('app.services.ai_service._get_client', return_value=mock_gemini_api):
-            # Simulate API error
-            mock_gemini_api.models.generate_content.side_effect = Exception("API Error")
-            
-            # Should not raise, return None
-            try:
-                result = None  # Would be result of parse_task_from_text
-                assert result is None
-            except Exception as e:
-                pytest.fail(f"Should handle API errors gracefully: {e}")
-    
-    @pytest.mark.asyncio
-    async def test_api_timeout_handling(self, mock_gemini_api):
-        """Test handling of API timeout."""
-        with patch('app.services.ai_service._get_client', return_value=mock_gemini_api):
-            mock_gemini_api.models.generate_content.side_effect = TimeoutError("API Timeout")
-            
-            # Should handle timeout without crashing
-            try:
-                result = None
-                assert result is None
-            except Exception:
-                pytest.fail("Should handle timeouts gracefully")
-    
-    @pytest.mark.asyncio
-    async def test_invalid_json_response(self, mock_gemini_api):
-        """Test handling of invalid JSON in API response."""
-        with patch('app.services.ai_service._get_client', return_value=mock_gemini_api):
-            mock_response = MagicMock()
-            mock_response.text = "This is not JSON {invalid}"
-            mock_gemini_api.models.generate_content.return_value = mock_response
-            
-            # Should handle invalid JSON
-            try:
-                result = None
-                assert result is None
-            except json.JSONDecodeError:
-                pytest.fail("Should handle invalid JSON gracefully")
+# =============================================================================
+#  count_tokens
+# =============================================================================
+
+class TestCountTokens:
+    def test_returns_int(self):
+        assert isinstance(count_tokens("hello world"), int)
+
+    def test_minimum_one_token(self):
+        assert count_tokens("a") >= 1
+
+    def test_empty_string_minimum(self):
+        assert count_tokens("") >= 0
+
+    def test_longer_text_more_tokens(self):
+        assert count_tokens("short") < count_tokens("This is a much longer sentence with many words")
+
+    def test_approximate_ratio(self):
+        # ~1 token per 4 chars: 400 chars ≈ 100 tokens ± 20
+        assert 80 <= count_tokens("a" * 400) <= 120
+
+    def test_unicode_text(self):
+        # Must not crash on non-ASCII
+        result = count_tokens("Привет мир 🌍")
+        assert result >= 1
 
 
-class TestMotivationalMessages:
-    """Tests for motivational message generation."""
-    
-    @pytest.mark.asyncio
-    async def test_generate_motivation_high_productivity(self, mock_gemini_api, sample_stats):
-        """TC_AI_005: Generate appropriate message for high productivity."""
-        with patch('app.services.ai_service._get_client', return_value=mock_gemini_api):
-            high_stats = {
-                "total": 10,
-                "done": 9,
-                "pending": 1,
-                "overdue": 0,
-                "completion_rate": 90.0,
-            }
-            
-            # Should generate celebratory message
-            mock_response = MagicMock()
-            mock_response.text = "🎉 You're crushing it!"
-            mock_gemini_api.models.generate_content.return_value = mock_response
-            
-            # Test would verify message contains positive language
-            assert "crushing" in mock_response.text.lower() or "great" in mock_response.text.lower()
-    
-    @pytest.mark.asyncio
-    async def test_generate_motivation_low_activity(self, mock_gemini_api):
-        """TC_AI_006: Generate encouraging message for low activity."""
-        with patch('app.services.ai_service._get_client', return_value=mock_gemini_api):
-            low_stats = {
-                "total": 5,
-                "done": 1,
-                "pending": 4,
-                "overdue": 1,
-                "completion_rate": 20.0,
-            }
-            
-            # Should generate encouraging message
-            mock_response = MagicMock()
-            mock_response.text = "💪 Keep going, you can do it!"
-            mock_gemini_api.models.generate_content.return_value = mock_response
-            
-            # Test would verify encouraging tone
-            assert "keep" in mock_response.text.lower() or "can" in mock_response.text.lower()
-    
-    @pytest.mark.asyncio
-    async def test_generate_motivation_mixed_stats(self):
-        """Test motivation message for average productivity."""
-        avg_stats = {
-            "total": 10,
-            "done": 5,
-            "pending": 4,
-            "overdue": 1,
-            "completion_rate": 50.0,
-        }
-        
-        # Should balance between encouraging and motivating
-        assert avg_stats["completion_rate"] == 50.0
+# =============================================================================
+#  TokenTracker
+# =============================================================================
+
+class TestTokenTracker:
+    def test_initial_counts_zero(self):
+        t = TokenTracker()
+        assert t.total_input_tokens == 0
+        assert t.total_output_tokens == 0
+        assert t.request_count == 0
+
+    def test_total_tokens_zero_initially(self):
+        assert TokenTracker().total_tokens() == 0
+
+    def test_add_accumulates_input(self):
+        t = TokenTracker()
+        t.add(100, 0)
+        t.add(200, 0)
+        assert t.total_input_tokens == 300
+
+    def test_add_accumulates_output(self):
+        t = TokenTracker()
+        t.add(0, 50)
+        t.add(0, 100)
+        assert t.total_output_tokens == 150
+
+    def test_add_increments_request_count(self):
+        t = TokenTracker()
+        t.add(10, 10)
+        t.add(10, 10)
+        assert t.request_count == 2
+
+    def test_total_tokens_sums_input_and_output(self):
+        t = TokenTracker()
+        t.add(100, 50)
+        assert t.total_tokens() == 150
+
+    def test_estimate_cost_keys_present(self):
+        t = TokenTracker()
+        t.add(1_000_000, 500_000)
+        cost = t.estimate_cost()
+        assert "input_cost" in cost
+        assert "output_cost" in cost
+        assert "total_cost" in cost
+
+    def test_estimate_cost_zero_when_no_tokens(self):
+        assert TokenTracker().estimate_cost()["total_cost"] == 0.0
+
+    def test_estimate_cost_total_equals_sum(self):
+        t = TokenTracker()
+        t.add(500_000, 250_000)
+        cost = t.estimate_cost()
+        assert abs(cost["total_cost"] - (cost["input_cost"] + cost["output_cost"])) < 1e-9
+
+    def test_estimate_cost_proportional_to_tokens(self):
+        t1 = TokenTracker()
+        t1.add(1000, 0)
+        t2 = TokenTracker()
+        t2.add(2000, 0)
+        assert t2.estimate_cost()["input_cost"] == pytest.approx(
+            2 * t1.estimate_cost()["input_cost"]
+        )
+
+    def test_get_stats_is_string(self):
+        t = TokenTracker()
+        t.add(100, 50)
+        stats = t.get_stats()
+        assert isinstance(stats, str)
+        assert len(stats) > 0
+
+    def test_get_stats_contains_request_count(self):
+        t = TokenTracker()
+        t.add(100, 50)
+        assert "1" in t.get_stats()  # request_count == 1
 
 
-class TestJSONParsing:
-    """Tests for safe JSON extraction and parsing."""
-    
-    def test_safe_json_valid(self):
-        """Test parsing valid JSON response."""
-        json_text = '{"title": "Task", "priority": "high"}'
-        
-        try:
-            data = json.loads(json_text)
-            assert data["title"] == "Task"
-            assert data["priority"] == "high"
-        except json.JSONDecodeError:
-            pytest.fail("Should parse valid JSON")
-    
-    def test_safe_json_with_markdown_fences(self):
-        """Test extracting JSON from markdown code fences."""
-        response_text = """Here's the parsed task:
-```json
-{"title": "Task", "priority": "high"}
-```"""
-        
-        # Should extract and parse
-        json_match = response_text.split("```json\n")[1].split("\n```")[0].strip()
-        data = json.loads(json_match)
-        assert data["title"] == "Task"
-    
-    def test_safe_json_invalid_format(self):
-        """Test handling of invalid JSON."""
-        invalid_json = "{'invalid': json format}"
-        
-        try:
-            json.loads(invalid_json)
-            pytest.fail("Should not parse single-quoted JSON")
-        except json.JSONDecodeError:
-            pass  # Expected
+# =============================================================================
+#  parse_task_from_text  (mocked _gemini)
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_parse_task_returns_dict_on_valid_json():
+    payload = '{"title":"Buy milk","description":"","category":"personal","priority":"low","deadline":null}'
+    with patch("app.services.ai_service._gemini", return_value=payload):
+        result = await parse_task_from_text("Buy milk tomorrow")
+    assert result is not None
+    assert result["title"] == "Buy milk"
+    assert result["category"] == "personal"
+    assert result["priority"] == "low"
+    assert result["deadline"] is None
 
 
-class TestCategoryDetection:
-    """Tests for automatic category detection."""
-    
-    def test_detect_work_category(self):
-        """Test work category keywords."""
-        work_keywords = ["meeting", "report", "project", "deadline", "client", "office"]
-        
-        test_text = "Submit the quarterly report for the client"
-        assert any(keyword in test_text.lower() for keyword in work_keywords)
-    
-    def test_detect_study_category(self):
-        """Test study category keywords."""
-        study_keywords = ["exam", "homework", "course", "lecture", "study"]
-        
-        test_text = "Study for the midterm exam"
-        assert any(keyword in test_text.lower() for keyword in study_keywords)
-    
-    def test_detect_health_category(self):
-        """Test health category keywords."""
-        health_keywords = ["doctor", "gym", "medicine", "workout", "health"]
-        
-        test_text = "Doctor appointment tomorrow"
-        assert any(keyword in test_text.lower() for keyword in health_keywords)
-    
-    def test_detect_finance_category(self):
-        """Test finance category keywords."""
-        finance_keywords = ["bill", "payment", "tax", "invoice", "rent"]
-        
-        test_text = "Pay rent by month end"
-        assert any(keyword in test_text.lower() for keyword in finance_keywords)
-    
-    def test_detect_personal_category(self):
-        """Test personal category keywords."""
-        personal_keywords = ["grocery", "groceries", "family", "home", "friend", "birthday"]
-        
-        test_text = "Buy groceries at store"
-        assert any(keyword in test_text.lower() for keyword in personal_keywords)
+@pytest.mark.asyncio
+async def test_parse_task_returns_none_on_invalid_json():
+    with patch("app.services.ai_service._gemini", return_value="not valid json at all"):
+        result = await parse_task_from_text("some task")
+    assert result is None
 
 
-class TestPriorityDetection:
-    """Tests for automatic priority detection."""
-    
-    def test_detect_high_priority(self):
-        """Test high priority keywords."""
-        high_keywords = ["urgent", "asap", "critical", "important", "immediately"]
-        
-        test_text = "Submit report urgently"
-        assert any(keyword in test_text.lower() for keyword in high_keywords)
-    
-    def test_detect_low_priority(self):
-        """Test low priority keywords."""
-        low_keywords = ["eventually", "someday", "whenever", "when possible", "optional"]
-        
-        test_text = "Read this book whenever you have time"
-        assert any(keyword in test_text.lower() for keyword in low_keywords)
-    
-    def test_detect_medium_priority(self):
-        """Test default to medium priority when no indicators."""
-        text_neutral = "Complete the task"
-        
-        # No priority indicators, should default to medium
-        has_high = any(kw in text_neutral.lower() for kw in ["urgent", "asap", "critical"])
-        has_low = any(kw in text_neutral.lower() for kw in ["eventually", "someday"])
-        
-        assert not has_high and not has_low
+@pytest.mark.asyncio
+async def test_parse_task_invalid_category_defaults_to_general():
+    payload = '{"title":"Task","description":"","category":"alien","priority":"medium","deadline":null}'
+    with patch("app.services.ai_service._gemini", return_value=payload):
+        result = await parse_task_from_text("task")
+    assert result["category"] == "general"
+
+
+@pytest.mark.asyncio
+async def test_parse_task_invalid_priority_defaults_to_medium():
+    payload = '{"title":"Task","description":"","category":"work","priority":"super_urgent","deadline":null}'
+    with patch("app.services.ai_service._gemini", return_value=payload):
+        result = await parse_task_from_text("task")
+    assert result["priority"] == "medium"
+
+
+@pytest.mark.asyncio
+async def test_parse_task_returns_none_on_gemini_exception():
+    with patch("app.services.ai_service._gemini", side_effect=Exception("API down")):
+        result = await parse_task_from_text("task")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_parse_task_deadline_passthrough():
+    payload = '{"title":"Task","description":"","category":"work","priority":"high","deadline":"2026-06-01T09:00:00"}'
+    with patch("app.services.ai_service._gemini", return_value=payload):
+        result = await parse_task_from_text("Submit report by June 1st")
+    assert result["deadline"] == "2026-06-01T09:00:00"
+
+
+@pytest.mark.asyncio
+async def test_parse_task_all_valid_categories_accepted():
+    for cat in ["work", "study", "personal", "health", "finance", "general"]:
+        payload = f'{{"title":"T","description":"","category":"{cat}","priority":"medium","deadline":null}}'
+        with patch("app.services.ai_service._gemini", return_value=payload):
+            result = await parse_task_from_text("task")
+        assert result["category"] == cat
+
+
+# =============================================================================
+#  auto_categorize  (mocked _gemini)
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_auto_categorize_valid_category():
+    with patch("app.services.ai_service._gemini", return_value="work"):
+        assert await auto_categorize("Write quarterly report") == "work"
+
+
+@pytest.mark.asyncio
+async def test_auto_categorize_invalid_defaults_to_general():
+    with patch("app.services.ai_service._gemini", return_value="random gibberish"):
+        assert await auto_categorize("do something") == "general"
+
+
+@pytest.mark.asyncio
+async def test_auto_categorize_exception_returns_general():
+    with patch("app.services.ai_service._gemini", side_effect=Exception("fail")):
+        assert await auto_categorize("anything") == "general"
+
+
+@pytest.mark.asyncio
+async def test_auto_categorize_strips_trailing_period():
+    with patch("app.services.ai_service._gemini", return_value="study."):
+        assert await auto_categorize("homework") == "study"
+
+
+@pytest.mark.asyncio
+async def test_auto_categorize_all_valid_categories():
+    for cat in ["work", "study", "personal", "health", "finance", "general"]:
+        with patch("app.services.ai_service._gemini", return_value=cat):
+            assert await auto_categorize("task") == cat
+
+
+# =============================================================================
+#  predict_priority  (mocked _gemini)
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_predict_priority_high():
+    with patch("app.services.ai_service._gemini", return_value="high"):
+        assert await predict_priority("Fix critical bug") == "high"
+
+
+@pytest.mark.asyncio
+async def test_predict_priority_low():
+    with patch("app.services.ai_service._gemini", return_value="low"):
+        assert await predict_priority("Someday read this book") == "low"
+
+
+@pytest.mark.asyncio
+async def test_predict_priority_invalid_defaults_to_medium():
+    with patch("app.services.ai_service._gemini", return_value="super_urgent"):
+        assert await predict_priority("task") == "medium"
+
+
+@pytest.mark.asyncio
+async def test_predict_priority_exception_returns_medium():
+    with patch("app.services.ai_service._gemini", side_effect=Exception("fail")):
+        assert await predict_priority("task") == "medium"
+
+
+@pytest.mark.asyncio
+async def test_predict_priority_with_deadline():
+    with patch("app.services.ai_service._gemini", return_value="high"):
+        result = await predict_priority("Critical task", deadline="2026-05-03T09:00:00")
+    assert result == "high"
+
+
+@pytest.mark.asyncio
+async def test_predict_priority_all_valid():
+    for pri in ["high", "medium", "low"]:
+        with patch("app.services.ai_service._gemini", return_value=pri):
+            assert await predict_priority("task") == pri
+
+
+# =============================================================================
+#  generate_daily_motivation  (mocked _gemini)
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_generate_motivation_returns_response():
+    with patch("app.services.ai_service._gemini", return_value="Keep going!"):
+        result = await generate_daily_motivation(
+            {"pending": 3, "done": 5, "completion_rate": 62, "overdue": 0, "top_category": "work"}
+        )
+    assert result == "Keep going!"
+
+
+@pytest.mark.asyncio
+async def test_generate_motivation_exception_returns_fallback():
+    with patch("app.services.ai_service._gemini", side_effect=Exception("fail")):
+        result = await generate_daily_motivation({})
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+
+@pytest.mark.asyncio
+async def test_generate_motivation_with_empty_stats():
+    with patch("app.services.ai_service._gemini", return_value="You got this!"):
+        result = await generate_daily_motivation({})
+    assert result == "You got this!"

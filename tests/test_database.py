@@ -1,385 +1,439 @@
 """
-tests/test_database.py — Unit tests for app/core/database.py
-
-Tests user and task CRUD operations.
+tests/test_database.py — Tests for app/core/database.py functions
+using a real SQLite file via patched DB_PATH.
 """
 
 import pytest
-from datetime import datetime, timedelta
+import pytest_asyncio
 import aiosqlite
+from unittest.mock import patch
+
+import app.core.database as database
 
 
-# Note: In a real scenario, we would patch DB_PATH in database.py
-# For this example, we'll show the test structure
+@pytest_asyncio.fixture
+async def db_path(tmp_path):
+    """Patch DB_PATH to a temp file and initialise the schema. Patch stays active during test."""
+    path = str(tmp_path / "test.db")
+    with patch("app.core.database.DB_PATH", path):
+        await database.init_db()
+        yield path
 
 
-class TestUserOperations:
-    """Tests for user-related database functions."""
-    
-    @pytest.mark.asyncio
-    async def test_create_user(self, temp_db, sample_user):
-        """TC_DB_001: Create new user successfully."""
-        # Insert user
-        await temp_db.execute(
-            """
-            INSERT INTO users (user_id, username, full_name)
-            VALUES (?, ?, ?)
-            """,
-            (sample_user["user_id"], sample_user["username"], sample_user["full_name"])
-        )
-        await temp_db.commit()
-        
-        # Verify user was created
-        temp_db.row_factory = aiosqlite.Row
-        async with temp_db.execute(
-            "SELECT * FROM users WHERE user_id = ?",
-            (sample_user["user_id"],)
+# =============================================================================
+#  init_db
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_init_db_creates_users_table(db_path):
+    async with aiosqlite.connect(db_path) as conn:
+        async with conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='users'"
         ) as cur:
-            row = await cur.fetchone()
-        
-        assert row is not None
-        assert row["username"] == sample_user["username"]
-        assert row["full_name"] == sample_user["full_name"]
-    
-    @pytest.mark.asyncio
-    async def test_get_user(self, temp_db, sample_user):
-        """TC_DB_003: Retrieve user by ID."""
-        # Setup: Create user
-        await temp_db.execute(
-            "INSERT INTO users (user_id, username, full_name) VALUES (?, ?, ?)",
-            (sample_user["user_id"], sample_user["username"], sample_user["full_name"])
-        )
-        await temp_db.commit()
-        
-        # Test: Retrieve user
-        temp_db.row_factory = aiosqlite.Row
-        async with temp_db.execute(
-            "SELECT * FROM users WHERE user_id = ?",
-            (sample_user["user_id"],)
-        ) as cur:
-            user = await cur.fetchone()
-        
-        assert user is not None
-        assert dict(user)["user_id"] == sample_user["user_id"]
-    
-    @pytest.mark.asyncio
-    async def test_get_nonexistent_user(self, temp_db):
-        """TC_DB_004: Retrieve non-existent user returns None."""
-        temp_db.row_factory = aiosqlite.Row
-        async with temp_db.execute(
-            "SELECT * FROM users WHERE user_id = ?",
-            (999999,)
-        ) as cur:
-            user = await cur.fetchone()
-        
-        assert user is None
-    
-    @pytest.mark.asyncio
-    async def test_update_user_preferences(self, temp_db, sample_user):
-        """TC_DB_005: Update user timezone and language."""
-        # Setup: Create user
-        await temp_db.execute(
-            "INSERT INTO users (user_id, username, full_name) VALUES (?, ?, ?)",
-            (sample_user["user_id"], sample_user["username"], sample_user["full_name"])
-        )
-        await temp_db.commit()
-        
-        # Test: Update preferences
-        new_tz = "America/New_York"
-        new_lang = "es"
-        await temp_db.execute(
-            "UPDATE users SET timezone = ?, language = ? WHERE user_id = ?",
-            (new_tz, new_lang, sample_user["user_id"])
-        )
-        await temp_db.commit()
-        
-        # Verify
-        temp_db.row_factory = aiosqlite.Row
-        async with temp_db.execute(
-            "SELECT * FROM users WHERE user_id = ?",
-            (sample_user["user_id"],)
-        ) as cur:
-            user = await cur.fetchone()
-        
-        assert dict(user)["timezone"] == new_tz
-        assert dict(user)["language"] == new_lang
-    
-    @pytest.mark.asyncio
-    async def test_get_all_users(self, temp_db, sample_user):
-        """TC_DB_006: Get all users from database."""
-        # Setup: Create multiple users
-        users = [
-            (111111, "user1", "User One"),
-            (222222, "user2", "User Two"),
-            (333333, "user3", "User Three"),
-        ]
-        for uid, uname, fname in users:
-            await temp_db.execute(
-                "INSERT INTO users (user_id, username, full_name) VALUES (?, ?, ?)",
-                (uid, uname, fname)
-            )
-        await temp_db.commit()
-        
-        # Test: Get all users
-        temp_db.row_factory = aiosqlite.Row
-        async with temp_db.execute("SELECT * FROM users") as cur:
-            all_users = await cur.fetchall()
-        
-        assert len(all_users) >= 3
-        assert all(u["username"] for u in all_users)
+            assert await cur.fetchone() is not None
 
 
-class TestTaskOperations:
-    """Tests for task-related database functions."""
-    
-    @pytest.mark.asyncio
-    async def test_create_task(self, temp_db, sample_user, sample_task):
-        """TC_DB_007: Create new task successfully."""
-        # Setup: Create user
-        await temp_db.execute(
-            "INSERT INTO users (user_id, username, full_name) VALUES (?, ?, ?)",
-            (sample_user["user_id"], sample_user["username"], sample_user["full_name"])
-        )
-        await temp_db.commit()
-        
-        # Test: Create task
-        cur = await temp_db.execute(
-            """
-            INSERT INTO tasks (user_id, title, description, category, priority, deadline)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                sample_user["user_id"],
-                sample_task["title"],
-                sample_task["description"],
-                sample_task["category"],
-                sample_task["priority"],
-                sample_task["deadline"],
-            )
-        )
-        await temp_db.commit()
-        task_id = cur.lastrowid
-        
-        # Verify
-        temp_db.row_factory = aiosqlite.Row
-        async with temp_db.execute(
-            "SELECT * FROM tasks WHERE id = ?",
-            (task_id,)
-        ) as cursor:
-            task = await cursor.fetchone()
-        
-        assert task is not None
-        assert dict(task)["title"] == sample_task["title"]
-        assert dict(task)["user_id"] == sample_user["user_id"]
-    
-    @pytest.mark.asyncio
-    async def test_get_task(self, temp_db, sample_user, sample_task):
-        """TC_DB_008: Retrieve task by ID."""
-        # Setup: Create user and task
-        await temp_db.execute(
-            "INSERT INTO users (user_id, username, full_name) VALUES (?, ?, ?)",
-            (sample_user["user_id"], sample_user["username"], sample_user["full_name"])
-        )
-        cur = await temp_db.execute(
-            "INSERT INTO tasks (user_id, title, description, category, priority) VALUES (?, ?, ?, ?, ?)",
-            (sample_user["user_id"], sample_task["title"], sample_task["description"], 
-             sample_task["category"], sample_task["priority"])
-        )
-        await temp_db.commit()
-        task_id = cur.lastrowid
-        
-        # Test: Get task
-        temp_db.row_factory = aiosqlite.Row
-        async with temp_db.execute(
-            "SELECT * FROM tasks WHERE id = ? AND user_id = ?",
-            (task_id, sample_user["user_id"])
-        ) as cursor:
-            task = await cursor.fetchone()
-        
-        assert task is not None
-        assert dict(task)["title"] == sample_task["title"]
-    
-    @pytest.mark.asyncio
-    async def test_get_task_wrong_user(self, temp_db, sample_user, sample_task):
-        """TC_DB_009: Prevent cross-user task access."""
-        # Setup: Create task for user 1
-        await temp_db.execute(
-            "INSERT INTO users (user_id, username, full_name) VALUES (?, ?, ?)",
-            (111111, "user1", "User One")
-        )
-        cur = await temp_db.execute(
-            "INSERT INTO tasks (user_id, title) VALUES (?, ?)",
-            (111111, "Sensitive Task")
-        )
-        await temp_db.commit()
-        task_id = cur.lastrowid
-        
-        # Test: Try to access as different user
-        temp_db.row_factory = aiosqlite.Row
-        async with temp_db.execute(
-            "SELECT * FROM tasks WHERE id = ? AND user_id = ?",
-            (task_id, 222222)  # Different user
-        ) as cursor:
-            task = await cursor.fetchone()
-        
-        assert task is None  # Should not have access
-    
-    @pytest.mark.asyncio
-    async def test_list_user_tasks_filtered(self, temp_db, sample_user):
-        """TC_DB_010: List tasks with filters (status, category)."""
-        # Setup
-        await temp_db.execute(
-            "INSERT INTO users (user_id, username, full_name) VALUES (?, ?, ?)",
-            (sample_user["user_id"], sample_user["username"], sample_user["full_name"])
-        )
-        
-        # Create tasks with different statuses and categories
-        tasks_data = [
-            (sample_user["user_id"], "Task 1", "pending", "work", "high"),
-            (sample_user["user_id"], "Task 2", "done", "work", "medium"),
-            (sample_user["user_id"], "Task 3", "pending", "personal", "low"),
-        ]
-        for uid, title, status, cat, pri in tasks_data:
-            await temp_db.execute(
-                "INSERT INTO tasks (user_id, title, status, category, priority) VALUES (?, ?, ?, ?, ?)",
-                (uid, title, status, cat, pri)
-            )
-        await temp_db.commit()
-        
-        # Test: Get pending tasks
-        temp_db.row_factory = aiosqlite.Row
-        async with temp_db.execute(
-            "SELECT * FROM tasks WHERE user_id = ? AND status = ?",
-            (sample_user["user_id"], "pending")
-        ) as cursor:
-            pending = await cursor.fetchall()
-        
-        assert len(pending) == 2
-        assert all(dict(t)["status"] == "pending" for t in pending)
-    
-    @pytest.mark.asyncio
-    async def test_update_task_status(self, temp_db, sample_user):
-        """TC_DB_012: Update task status from pending to done."""
-        # Setup
-        await temp_db.execute(
-            "INSERT INTO users (user_id, username, full_name) VALUES (?, ?, ?)",
-            (sample_user["user_id"], sample_user["username"], sample_user["full_name"])
-        )
-        cur = await temp_db.execute(
-            "INSERT INTO tasks (user_id, title, status) VALUES (?, ?, ?)",
-            (sample_user["user_id"], "Test Task", "pending")
-        )
-        await temp_db.commit()
-        task_id = cur.lastrowid
-        
-        # Test: Update status
-        await temp_db.execute(
-            "UPDATE tasks SET status = ?, updated_at = datetime('now') WHERE id = ?",
-            ("done", task_id)
-        )
-        await temp_db.commit()
-        
-        # Verify
-        temp_db.row_factory = aiosqlite.Row
-        async with temp_db.execute(
-            "SELECT * FROM tasks WHERE id = ?",
-            (task_id,)
-        ) as cursor:
-            task = await cursor.fetchone()
-        
-        assert dict(task)["status"] == "done"
-    
-    @pytest.mark.asyncio
-    async def test_delete_task(self, temp_db, sample_user):
-        """TC_DB_013: Delete task from database."""
-        # Setup
-        await temp_db.execute(
-            "INSERT INTO users (user_id, username, full_name) VALUES (?, ?, ?)",
-            (sample_user["user_id"], sample_user["username"], sample_user["full_name"])
-        )
-        cur = await temp_db.execute(
-            "INSERT INTO tasks (user_id, title) VALUES (?, ?)",
-            (sample_user["user_id"], "To Delete")
-        )
-        await temp_db.commit()
-        task_id = cur.lastrowid
-        
-        # Test: Delete task
-        await temp_db.execute(
-            "DELETE FROM tasks WHERE id = ? AND user_id = ?",
-            (task_id, sample_user["user_id"])
-        )
-        await temp_db.commit()
-        
-        # Verify deletion
-        temp_db.row_factory = aiosqlite.Row
-        async with temp_db.execute(
-            "SELECT * FROM tasks WHERE id = ?",
-            (task_id,)
-        ) as cursor:
-            task = await cursor.fetchone()
-        
-        assert task is None
+@pytest.mark.asyncio
+async def test_init_db_creates_tasks_table(db_path):
+    async with aiosqlite.connect(db_path) as conn:
+        async with conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'"
+        ) as cur:
+            assert await cur.fetchone() is not None
 
 
-class TestTaskStatistics:
-    """Tests for task statistics and analytics."""
-    
-    @pytest.mark.asyncio
-    async def test_get_user_stats(self, temp_db, sample_user):
-        """TC_DB_015: Get user task statistics."""
-        # Setup: Create user and tasks with different statuses
-        await temp_db.execute(
-            "INSERT INTO users (user_id, username, full_name) VALUES (?, ?, ?)",
-            (sample_user["user_id"], sample_user["username"], sample_user["full_name"])
+@pytest.mark.asyncio
+async def test_init_db_is_idempotent(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.init_db()
+        await database.init_db()  # second call must not raise
+
+
+# =============================================================================
+#  upsert_user / get_user
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_upsert_inserts_new_user(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(1001, "alice", "Alice Smith")
+        user = await database.get_user(1001)
+    assert user is not None
+    assert user["user_id"] == 1001
+    assert user["username"] == "alice"
+    assert user["full_name"] == "Alice Smith"
+
+
+@pytest.mark.asyncio
+async def test_upsert_sets_default_timezone(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(1002, "bob", "Bob")
+        user = await database.get_user(1002)
+    assert user["timezone"] == "UTC"
+
+
+@pytest.mark.asyncio
+async def test_upsert_updates_existing_user(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(1003, "old_name", "Old Full")
+        await database.upsert_user(1003, "new_name", "New Full")
+        user = await database.get_user(1003)
+    assert user["username"] == "new_name"
+    assert user["full_name"] == "New Full"
+
+
+@pytest.mark.asyncio
+async def test_get_user_nonexistent_returns_none(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        user = await database.get_user(9999)
+    assert user is None
+
+
+# =============================================================================
+#  update_user_preferences
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_update_timezone(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(2001, "carol", "Carol")
+        await database.update_user_preferences(2001, timezone="Asia/Tashkent")
+        user = await database.get_user(2001)
+    assert user["timezone"] == "Asia/Tashkent"
+
+
+@pytest.mark.asyncio
+async def test_update_language(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(2002, "dave", "Dave")
+        await database.update_user_preferences(2002, language="ru")
+        user = await database.get_user(2002)
+    assert user["language"] == "ru"
+
+
+@pytest.mark.asyncio
+async def test_update_no_fields_is_noop(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(2003, "eve", "Eve")
+        await database.update_user_preferences(2003)
+        user = await database.get_user(2003)
+    assert user["timezone"] == "UTC"
+    assert user["language"] == "en"
+
+
+# =============================================================================
+#  get_all_users
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_get_all_users_empty(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        users = await database.get_all_users()
+    assert users == []
+
+
+@pytest.mark.asyncio
+async def test_get_all_users_returns_all(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(3001, "u1", "User One")
+        await database.upsert_user(3002, "u2", "User Two")
+        users = await database.get_all_users()
+    ids = {u["user_id"] for u in users}
+    assert 3001 in ids
+    assert 3002 in ids
+
+
+# =============================================================================
+#  create_task / get_task
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_create_task_returns_positive_id(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(4001, "frank", "Frank")
+        task_id = await database.create_task(4001, "Buy milk")
+    assert isinstance(task_id, int)
+    assert task_id > 0
+
+
+@pytest.mark.asyncio
+async def test_create_task_stores_all_fields(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(4002, "grace", "Grace")
+        tid = await database.create_task(
+            4002, "Write report", "Due Monday", "work", "high", "2026-06-01T09:00:00"
         )
-        
-        # Create tasks: 7 done, 2 pending, 1 overdue
-        from datetime import datetime, timedelta
-        today = datetime.now()
-        overdue_date = (today - timedelta(days=1)).isoformat()
-        future_date = (today + timedelta(days=1)).isoformat()
-        
-        tasks = [
-            ("Task 1", "done", None),
-            ("Task 2", "done", None),
-            ("Task 3", "done", None),
-            ("Task 4", "done", None),
-            ("Task 5", "done", None),
-            ("Task 6", "done", None),
-            ("Task 7", "done", None),
-            ("Task 8", "pending", future_date),
-            ("Task 9", "pending", future_date),
-            ("Task 10", "pending", overdue_date),
-        ]
-        
-        for title, status, deadline in tasks:
-            await temp_db.execute(
-                "INSERT INTO tasks (user_id, title, status, deadline) VALUES (?, ?, ?, ?)",
-                (sample_user["user_id"], title, status, deadline)
-            )
-        await temp_db.commit()
-        
-        # Test: Calculate stats
-        temp_db.row_factory = aiosqlite.Row
-        async with temp_db.execute(
-            "SELECT COUNT(*) as total FROM tasks WHERE user_id = ?",
-            (sample_user["user_id"],)
-        ) as cur:
-            total = await cur.fetchone()
-        
-        async with temp_db.execute(
-            "SELECT COUNT(*) as done FROM tasks WHERE user_id = ? AND status = ?",
-            (sample_user["user_id"], "done")
-        ) as cur:
-            done = await cur.fetchone()
-        
-        async with temp_db.execute(
-            "SELECT COUNT(*) as pending FROM tasks WHERE user_id = ? AND status = ? AND deadline > ?",
-            (sample_user["user_id"], "pending", datetime.now().isoformat())
-        ) as cur:
-            pending = await cur.fetchone()
-        
-        assert dict(total)["total"] == 10
-        assert dict(done)["done"] == 7
-        assert dict(pending)["pending"] >= 2
+        task = await database.get_task(tid, 4002)
+    assert task["title"] == "Write report"
+    assert task["description"] == "Due Monday"
+    assert task["category"] == "work"
+    assert task["priority"] == "high"
+    assert task["deadline"] == "2026-06-01T09:00:00"
+
+
+@pytest.mark.asyncio
+async def test_create_task_defaults(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(4003, "heidi", "Heidi")
+        tid = await database.create_task(4003, "Default task")
+        task = await database.get_task(tid, 4003)
+    assert task["status"] == "pending"
+    assert task["category"] == "general"
+    assert task["priority"] == "medium"
+    assert task["deadline"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_task_wrong_user_returns_none(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(4004, "ivan", "Ivan")
+        tid = await database.create_task(4004, "Private task")
+        result = await database.get_task(tid, 9999)
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_task_nonexistent_returns_none(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        result = await database.get_task(99999, 1)
+    assert result is None
+
+
+# =============================================================================
+#  get_user_tasks
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_get_user_tasks_returns_own_tasks(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(5001, "judy", "Judy")
+        await database.create_task(5001, "Task A")
+        await database.create_task(5001, "Task B")
+        tasks = await database.get_user_tasks(5001)
+    assert len(tasks) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_user_tasks_excludes_other_users(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(5002, "karl", "Karl")
+        await database.upsert_user(5003, "lea", "Lea")
+        await database.create_task(5002, "Karl task")
+        tasks = await database.get_user_tasks(5003)
+    assert tasks == []
+
+
+@pytest.mark.asyncio
+async def test_get_user_tasks_filter_by_status(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(5004, "mike", "Mike")
+        id1 = await database.create_task(5004, "Pending")
+        id2 = await database.create_task(5004, "Done")
+        await database.update_task(id2, 5004, status="done")
+        pending = await database.get_user_tasks(5004, status="pending")
+        done = await database.get_user_tasks(5004, status="done")
+    assert len(pending) == 1 and pending[0]["title"] == "Pending"
+    assert len(done) == 1 and done[0]["title"] == "Done"
+
+
+@pytest.mark.asyncio
+async def test_get_user_tasks_filter_by_category(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(5005, "nina", "Nina")
+        await database.create_task(5005, "Work task", category="work")
+        await database.create_task(5005, "Study task", category="study")
+        tasks = await database.get_user_tasks(5005, category="work")
+    assert len(tasks) == 1
+    assert tasks[0]["category"] == "work"
+
+
+@pytest.mark.asyncio
+async def test_get_user_tasks_excludes_cancelled(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(5006, "oscar", "Oscar")
+        id1 = await database.create_task(5006, "Normal")
+        id2 = await database.create_task(5006, "Cancelled")
+        await database.update_task(id2, 5006, status="cancelled")
+        tasks = await database.get_user_tasks(5006)
+    titles = [t["title"] for t in tasks]
+    assert "Cancelled" not in titles
+    assert "Normal" in titles
+
+
+@pytest.mark.asyncio
+async def test_get_user_tasks_priority_ordering(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(5007, "pat", "Pat")
+        await database.create_task(5007, "Low task", priority="low")
+        await database.create_task(5007, "High task", priority="high")
+        await database.create_task(5007, "Med task", priority="medium")
+        tasks = await database.get_user_tasks(5007)
+    assert tasks[0]["priority"] == "high"
+    assert tasks[1]["priority"] == "medium"
+    assert tasks[2]["priority"] == "low"
+
+
+# =============================================================================
+#  update_task
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_update_task_title(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(6001, "quinn", "Quinn")
+        tid = await database.create_task(6001, "Original")
+        result = await database.update_task(tid, 6001, title="Updated")
+        task = await database.get_task(tid, 6001)
+    assert result is True
+    assert task["title"] == "Updated"
+
+
+@pytest.mark.asyncio
+async def test_update_task_status(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(6002, "rob", "Rob")
+        tid = await database.create_task(6002, "Task")
+        await database.update_task(tid, 6002, status="done")
+        task = await database.get_task(tid, 6002)
+    assert task["status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_update_task_multiple_fields(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(6003, "sara", "Sara")
+        tid = await database.create_task(6003, "Task")
+        await database.update_task(tid, 6003, priority="high", category="work")
+        task = await database.get_task(tid, 6003)
+    assert task["priority"] == "high"
+    assert task["category"] == "work"
+
+
+@pytest.mark.asyncio
+async def test_update_task_wrong_user_returns_false(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(6004, "tom", "Tom")
+        tid = await database.create_task(6004, "Secure task")
+        result = await database.update_task(tid, 9999, title="Hacked")
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_update_task_no_allowed_fields_returns_false(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(6005, "uma", "Uma")
+        tid = await database.create_task(6005, "Task")
+        result = await database.update_task(tid, 6005, invalid_column="value")
+    assert result is False
+
+
+# =============================================================================
+#  delete_task
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_delete_task_removes_it(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(7001, "vera", "Vera")
+        tid = await database.create_task(7001, "To delete")
+        result = await database.delete_task(tid, 7001)
+        task = await database.get_task(tid, 7001)
+    assert result is True
+    assert task is None
+
+
+@pytest.mark.asyncio
+async def test_delete_task_nonexistent_returns_false(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(7002, "will", "Will")
+        result = await database.delete_task(99999, 7002)
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_delete_task_wrong_user_returns_false(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(7003, "xena", "Xena")
+        tid = await database.create_task(7003, "Secure")
+        result = await database.delete_task(tid, 9999)
+    assert result is False
+
+
+# =============================================================================
+#  mark_task_reminded
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_mark_task_reminded_sets_timestamp(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(8001, "yara", "Yara")
+        tid = await database.create_task(8001, "Reminder task")
+        await database.mark_task_reminded(tid)
+        async with aiosqlite.connect(db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT reminded_at FROM tasks WHERE id = ?", (tid,)
+            ) as cur:
+                row = await cur.fetchone()
+    assert row["reminded_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_mark_task_reminded_twice_does_not_raise(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(8002, "zack", "Zack")
+        tid = await database.create_task(8002, "Task")
+        await database.mark_task_reminded(tid)
+        await database.mark_task_reminded(tid)
+
+
+# =============================================================================
+#  get_user_stats
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_stats_empty_user(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(9001, "amy", "Amy")
+        stats = await database.get_user_stats(9001)
+    assert stats["total"] == 0
+    assert stats["done"] == 0
+    assert stats["pending"] == 0
+    assert stats["completion_rate"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_stats_completion_rate(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(9002, "ben", "Ben")
+        id1 = await database.create_task(9002, "T1", category="work")
+        id2 = await database.create_task(9002, "T2", category="work")
+        id3 = await database.create_task(9002, "T3", category="study")
+        await database.update_task(id1, 9002, status="done")
+        await database.update_task(id2, 9002, status="done")
+        stats = await database.get_user_stats(9002)
+    assert stats["total"] == 3
+    assert stats["done"] == 2
+    assert stats["pending"] == 1
+    assert stats["completion_rate"] == pytest.approx(66.7, abs=0.1)
+
+
+@pytest.mark.asyncio
+async def test_stats_top_category(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(9003, "cara", "Cara")
+        await database.create_task(9003, "W1", category="work")
+        await database.create_task(9003, "W2", category="work")
+        await database.create_task(9003, "S1", category="study")
+        stats = await database.get_user_stats(9003)
+    assert stats["top_category"] == "work"
+
+
+@pytest.mark.asyncio
+async def test_stats_all_done_rate_100(db_path):
+    with patch("app.core.database.DB_PATH", db_path):
+        await database.upsert_user(9004, "dan", "Dan")
+        id1 = await database.create_task(9004, "Only task")
+        await database.update_task(id1, 9004, status="done")
+        stats = await database.get_user_stats(9004)
+    assert stats["completion_rate"] == 100.0

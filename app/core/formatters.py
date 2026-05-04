@@ -9,6 +9,8 @@ import logging
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
+import pytz
+
 logger = logging.getLogger(__name__)
 
 
@@ -65,14 +67,19 @@ def fmt_category(c: str) -> str:
     return f"{emoji} {escape_md(c.capitalize())}"
 
 
-def fmt_deadline(deadline: Optional[str]) -> str:
+def fmt_deadline(deadline: Optional[str], tz_name: str = "UTC") -> str:
     """Return a fully MD2-escaped deadline string with a human-readable label."""
     if not deadline:
         return escape_md("No deadline")
     try:
-        dt   = datetime.fromisoformat(deadline)
-        now  = datetime.now()
-        days = (dt - now).days
+        dt_utc = datetime.fromisoformat(deadline).replace(tzinfo=pytz.utc)
+        try:
+            user_tz = pytz.timezone(tz_name)
+        except Exception:
+            user_tz = pytz.utc
+        dt_local  = dt_utc.astimezone(user_tz)
+        now_local = datetime.now(user_tz)
+        days = (dt_local.date() - now_local.date()).days
 
         if days < 0:
             label = "Overdue"
@@ -83,8 +90,7 @@ def fmt_deadline(deadline: Optional[str]) -> str:
         else:
             label = f"📅 In {days} days"
 
-        # strftime output contains spaces and commas — escape it all
-        date_str = dt.strftime("%d %b %Y, %H:%M")
+        date_str = dt_local.strftime("%d %b %Y, %H:%M")
         return f"{escape_md(date_str)} \\({escape_md(label)}\\)"
     except Exception:
         return escape_md(str(deadline))
@@ -94,7 +100,7 @@ def fmt_deadline(deadline: Optional[str]) -> str:
 #  Task card  — full detail view
 # ─────────────────────────────────────────────
 
-def format_task_card(task: Dict[str, Any], show_id: bool = True) -> str:
+def format_task_card(task: Dict[str, Any], show_id: bool = True, user_tz: str = "UTC") -> str:
     lines = []
     if show_id:
         lines.append(f"🔖 *Task \\#{task['id']}*")
@@ -104,45 +110,8 @@ def format_task_card(task: Dict[str, Any], show_id: bool = True) -> str:
     lines.append(f"📊 Status:    {fmt_status(task['status'])}")
     lines.append(f"⚡ Priority:  {fmt_priority(task['priority'])}")
     lines.append(f"🏷️ Category:  {fmt_category(task['category'])}")
-    lines.append(f"🕐 Deadline:  {fmt_deadline(task.get('deadline'))}")
+    lines.append(f"🕐 Deadline:  {fmt_deadline(task.get('deadline'), user_tz)}")
     lines.append(f"🗓️ Created:   {escape_md(task['created_at'][:10])}")
-    return "\n".join(lines)
-
-
-# ─────────────────────────────────────────────
-#  Task list  — compact multi-row view
-# ─────────────────────────────────────────────
-
-def format_task_list(tasks: List[Dict[str, Any]]) -> str:
-    """Compact list used as fallback plain-text (not used for inline-button list)."""
-    if not tasks:
-        return "✅ No tasks found\\. You're all clear\\!"
-
-    lines = [f"📋 *Your Tasks* \\({len(tasks)} total\\)\n"]
-    for t in tasks:
-        p_emoji = PRIORITY_EMOJI.get(t["priority"], "⚪")
-        s_emoji = STATUS_EMOJI.get(t["status"], "❓")
-        deadline_badge = ""
-        if t.get("deadline"):
-            try:
-                dt   = datetime.fromisoformat(t["deadline"])
-                diff = (dt - datetime.utcnow()).days
-                if diff < 0:
-                    deadline_badge = " ⚠️OD"
-                elif diff == 0:
-                    deadline_badge = " 🔥Today"
-                elif diff == 1:
-                    deadline_badge = " ⏰Tmrw"
-                else:
-                    deadline_badge = f" 📅{dt.strftime('%d/%m')}"
-            except Exception:
-                pass
-        lines.append(
-            f"{s_emoji}{p_emoji} `\\#{t['id']}` "
-            f"{escape_md(t['title'][:40])}"
-            f"{escape_md(deadline_badge)}"
-        )
-    lines.append("\n_Use /edittask \\<id\\> or /deletetask \\<id\\>_")
     return "\n".join(lines)
 
 

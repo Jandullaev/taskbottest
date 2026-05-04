@@ -1,14 +1,11 @@
-"""
-app/main.py — Application entry point (called from run.py).
-"""
+"""app/main.py — Application entry point."""
 
 import logging
-import os
-import traceback
 
+from app.core.logger import setup_logging
 from config.settings import TELEGRAM_BOT_TOKEN, GEMINI_API_KEY
-from telegram import Update
-from telegram import BotCommand
+
+from telegram import Update, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -19,10 +16,8 @@ from telegram.ext import (
 )
 
 import app.core.database as db
-from app.core.logger import setup_logging
 from app.bot.reminders import create_scheduler
 from app.bot.handlers import (
-    # Simple commands
     cmd_start,
     cmd_help,
     cmd_mytasks,
@@ -32,59 +27,38 @@ from app.bot.handlers import (
     cmd_stats,
     cmd_settimezone,
     unknown_command,
-    # Menu callbacks
-    callback_menu,
-    # Task inline callbacks
+    msg_handle_menu_mytasks,
+    msg_handle_menu_stats,
+    msg_handle_menu_filters,
+    msg_handle_filter,
+    msg_handle_menu_timezone,
+    msg_handle_timezone,
+    msg_back_to_menu,
+    msg_handle_task_done,
+    msg_handle_task_delete,
+    msg_handle_task_delete_confirm,
+    msg_handle_task_delete_cancel,
     callback_task_view,
-    callback_task_done,
-    callback_task_delete,
-    callback_task_delete_confirm,
-    # Conversation handler builders
+    callback_main_menu,
+)
+from app.bot.conversations import (
     build_addtask_handler,
     build_addtask_ai_handler,
     build_edittask_handler,
 )
 
-# ─────────────────────────────────────────────
-#  Logging
-# ─────────────────────────────────────────────
-
 setup_logging()
 logger = logging.getLogger(__name__)
 
-
-# ─────────────────────────────────────────────
-#  Bot menu commands (shown in Telegram UI)
-# ─────────────────────────────────────────────
-
 BOT_COMMANDS = [
-    BotCommand("start",        "Register and get started"),
-    BotCommand("help",         "Show all commands"),
-    BotCommand("addtask",      "Create task step-by-step"),
-    BotCommand("addtask_ai",   "Create task with AI (natural language)"),
-    BotCommand("mytasks",      "List your tasks"),
-    BotCommand("mytask",       "View a single task: /mytask <id>"),
-    BotCommand("done",         "Mark task as done: /done <id>"),
-    BotCommand("edittask",     "Edit a task: /edittask <id>"),
-    BotCommand("deletetask",   "Delete a task: /deletetask <id>"),
-    BotCommand("stats",        "Your productivity stats"),
-    BotCommand("settimezone",  "Set your timezone"),
+    BotCommand("start", "Register and get started"),
+    BotCommand("help",  "Show help"),
 ]
 
 
-# ─────────────────────────────────────────────
-#  Main
-# ─────────────────────────────────────────────
-
-# ─────────────────────────────────────────────
-#  Global error handler
-# ─────────────────────────────────────────────
-
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log all exceptions and notify the user with a friendly message."""
+    """Log all exceptions and notify the user."""
     logger.error("Exception while handling an update:", exc_info=context.error)
-
-    # Try to tell the user something went wrong
     if isinstance(update, Update):
         msg = (
             "⚠️ Something went wrong while processing your request\\.\n"
@@ -92,20 +66,20 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         try:
             if update.callback_query:
-                await update.callback_query.answer("Something went wrong. Please try again.", show_alert=True)
+                await update.callback_query.answer(
+                    "Something went wrong. Please try again.", show_alert=True
+                )
             elif update.effective_message:
                 await update.effective_message.reply_text(msg, parse_mode="MarkdownV2")
         except Exception:
-            pass  # Don't crash the error handler itself
+            pass
 
 
 async def post_init(application: Application) -> None:
-    """Runs inside the event loop after the application is initialised."""
     await db.init_db()
     await application.bot.set_my_commands(BOT_COMMANDS)
     logger.info("Database initialised and bot commands registered.")
 
-    # Start scheduler here — event loop is guaranteed to be running at this point
     scheduler = create_scheduler(application.bot)
     scheduler.start()
     application.bot_data["scheduler"] = scheduler
@@ -113,7 +87,6 @@ async def post_init(application: Application) -> None:
 
 
 async def post_shutdown(application: Application) -> None:
-    """Runs when the bot is shutting down — stop the scheduler cleanly."""
     scheduler = application.bot_data.get("scheduler")
     if scheduler and scheduler.running:
         scheduler.shutdown(wait=False)
@@ -123,10 +96,9 @@ async def post_shutdown(application: Application) -> None:
 def main():
     token = TELEGRAM_BOT_TOKEN
     if not token:
-        raise ValueError("TELEGRAM_BOT_TOKEN is not set. Copy .env.example to .env and fill it in.")
+        raise ValueError("TELEGRAM_BOT_TOKEN is not set.")
 
-    gemini_key = GEMINI_API_KEY
-    if not gemini_key:
+    if not GEMINI_API_KEY:
         logger.warning("GEMINI_API_KEY not set — AI features will fail at runtime.")
 
     app = (
@@ -137,29 +109,78 @@ def main():
         .build()
     )
 
-    # ── Conversation handlers (must be registered first)
+    # ── Conversation handlers (registered first — highest priority)
     app.add_handler(build_addtask_handler())
     app.add_handler(build_addtask_ai_handler())
     app.add_handler(build_edittask_handler())
 
     # ── Simple command handlers
-    app.add_handler(CommandHandler("start",        cmd_start))
-    app.add_handler(CommandHandler("help",         cmd_help))
-    app.add_handler(CommandHandler("mytasks",      cmd_mytasks))
-    app.add_handler(CommandHandler("mytask",       cmd_mytask))
-    app.add_handler(CommandHandler("done",         cmd_done))
-    app.add_handler(CommandHandler("deletetask",   cmd_deletetask))
-    app.add_handler(CommandHandler("stats",        cmd_stats))
-    app.add_handler(CommandHandler("settimezone",  cmd_settimezone))
+    app.add_handler(CommandHandler("start",       cmd_start))
+    app.add_handler(CommandHandler("help",        cmd_help))
+    app.add_handler(CommandHandler("mytasks",     cmd_mytasks))
+    app.add_handler(CommandHandler("mytask",      cmd_mytask))
+    app.add_handler(CommandHandler("done",        cmd_done))
+    app.add_handler(CommandHandler("deletetask",  cmd_deletetask))
+    app.add_handler(CommandHandler("stats",       cmd_stats))
+    app.add_handler(CommandHandler("settimezone", cmd_settimezone))
 
-    # ── Inline button callbacks
-    app.add_handler(CallbackQueryHandler(callback_menu,               pattern=r"^menu_"))
-    app.add_handler(CallbackQueryHandler(callback_task_view,          pattern=r"^task_view_\d+$"))
-    app.add_handler(CallbackQueryHandler(callback_task_done,          pattern=r"^task_done_\d+$"))
-    app.add_handler(CallbackQueryHandler(callback_task_delete,        pattern=r"^task_del_\d+$"))
-    app.add_handler(CallbackQueryHandler(callback_task_delete_confirm,pattern=r"^task_del_confirm_\d+$"))
+    # ── Task action buttons  ← MUST come before filter buttons
+    #    because "✅ Done" exists in both filter and task-action keyboards.
+    #    The handler checks context.user_data["current_task_id"] to decide
+    #    which path to take, so registration order matters here.
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r"^✅ Done$"), msg_handle_task_done
+    ))
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r"^🗑️ Delete$"), msg_handle_task_delete
+    ))
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r"^🗑️ Yes, Delete$"), msg_handle_task_delete_confirm
+    ))
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r"^↩️ Cancel$"), msg_handle_task_delete_cancel
+    ))
 
-    # ── Fallback for unknown commands
+    # ── Main menu buttons
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r"^📋 My Tasks$"), msg_handle_menu_mytasks
+    ))
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r"^📊 Stats$"), msg_handle_menu_stats
+    ))
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r"^🔍 Filters$"), msg_handle_menu_filters
+    ))
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r"^⚙️ Timezone$"), msg_handle_menu_timezone
+    ))
+
+    # ── Filter buttons (status / category)
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(
+            r"^(⏳ Pending|🔄 In Progress|💼 Work|📚 Study|🏠 Personal|❤️ Health|💰 Finance)$"
+        ),
+        msg_handle_filter,
+    ))
+
+    # ── Timezone buttons
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r"^🌍"), msg_handle_timezone
+    ))
+
+    # ── Navigation
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r"^◀️ Back to Menu$"), msg_back_to_menu
+    ))
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r"^❌ Cancel$"), msg_back_to_menu
+    ))
+
+    # ── Inline callbacks
+    app.add_handler(CallbackQueryHandler(callback_task_view,  pattern=r"^task_view_\d+$"))
+    app.add_handler(CallbackQueryHandler(callback_main_menu, pattern=r"^menu_main$"))
+
+    # ── Unknown commands fallback
     app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
 
     # ── Global error handler

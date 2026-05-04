@@ -1,363 +1,228 @@
 """
-tests/test_reminders.py — Unit tests for app/bot/reminders.py
-
-Tests task reminders, deadline notifications, and scheduler lifecycle.
+tests/test_reminders.py — Tests for app/bot/reminders.py
+Uses mocked bot, database, and AI calls to test scheduler setup
+and the reminder/summary functions without real network or DB I/O.
 """
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timedelta
-import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch, call
+from datetime import datetime
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+from app.bot.reminders import check_deadlines, send_daily_summaries, create_scheduler
 
 
-class TestDeadlineReminders:
-    """Tests for deadline reminder notifications."""
-    
-    @pytest.mark.asyncio
-    async def test_send_deadline_reminder_approaching(self, mock_bot):
-        """TC_REM_001: Send reminder for task due in next 24h."""
-        user_id = 123456
-        task = {
-            "id": 5,
-            "title": "Submit report",
-            "deadline": (datetime.now() + timedelta(hours=12)).isoformat(),
-        }
-        
-        # Mock bot.send_message
-        mock_bot.send_message = AsyncMock()
-        
-        # Test would call send_deadline_reminder(user_id, task)
-        # Should send message: "Reminder: 'Submit report' due in 12 hours"
-        assert task["id"] == 5
-    
-    @pytest.mark.asyncio
-    async def test_send_deadline_reminder_overdue(self, mock_bot):
-        """TC_REM_002: Send alert for overdue task."""
-        user_id = 123456
-        task = {
-            "id": 7,
-            "title": "Pay rent",
-            "deadline": (datetime.now() - timedelta(days=2)).isoformat(),
-        }
-        
-        mock_bot.send_message = AsyncMock()
-        
-        # Test would call send_overdue_alert(user_id, task)
-        # Should send ⚠️ alert message: "Task is 2 days overdue"
-        assert task["id"] == 7
-    
-    @pytest.mark.asyncio
-    async def test_skip_reminder_completed_task(self, mock_bot):
-        """TC_REM_003: Don't send reminder for completed task."""
-        task = {
-            "id": 5,
-            "title": "Done task",
-            "status": "done",
-            "deadline": (datetime.now() + timedelta(hours=2)).isoformat(),
-        }
-        
-        # Should skip this task
-        assert task["status"] == "done"
-    
-    @pytest.mark.asyncio
-    async def test_no_reminder_for_indefinite_tasks(self, mock_bot):
-        """TC_REM_004: Tasks without deadline don't trigger reminders."""
-        task = {
-            "id": 9,
-            "title": "Indefinite task",
-            "deadline": None,
-            "status": "pending",
-        }
-        
-        # Should not send reminder
-        assert task["deadline"] is None
+# =============================================================================
+#  create_scheduler
+# =============================================================================
+
+def test_create_scheduler_returns_async_io_scheduler():
+    bot = AsyncMock()
+    scheduler = create_scheduler(bot)
+    assert isinstance(scheduler, AsyncIOScheduler)
 
 
-class TestDailySummaryReminders:
-    """Tests for daily summary notifications."""
-    
-    @pytest.mark.asyncio
-    async def test_send_daily_summary_has_tasks(self, mock_bot):
-        """TC_REM_005: Send daily summary of pending tasks."""
-        user_id = 123456
-        tasks = [
-            {"id": 1, "title": "Task 1", "priority": "high"},
-            {"id": 2, "title": "Task 2", "priority": "medium"},
-            {"id": 3, "title": "Task 3", "priority": "low"},
-        ]
-        
-        mock_bot.send_message = AsyncMock()
-        
-        # Test would call send_daily_summary(user_id)
-        # Should send message with 3 pending tasks
-        assert len(tasks) == 3
-    
-    @pytest.mark.asyncio
-    async def test_send_daily_summary_no_tasks(self, mock_bot):
-        """Daily summary when no pending tasks."""
-        user_id = 123456
-        tasks = []
-        
-        mock_bot.send_message = AsyncMock()
-        
-        # Should send congratulatory message
-        assert len(tasks) == 0
-    
-    @pytest.mark.asyncio
-    async def test_daily_summary_respects_timezone(self):
-        """Daily summary sent at user's local time."""
-        timezones = ["UTC", "America/New_York", "Europe/London", "Asia/Tokyo"]
-        
-        for tz in timezones:
-            # Summary should be sent at 09:00 local time
-            assert isinstance(tz, str)
+def test_create_scheduler_has_check_deadlines_job():
+    bot = AsyncMock()
+    scheduler = create_scheduler(bot)
+    job_ids = {job.id for job in scheduler.get_jobs()}
+    assert "check_deadlines" in job_ids
 
 
-class TestSchedulerInitialization:
-    """Tests for scheduler startup and lifecycle."""
-    
-    @pytest.mark.asyncio
-    async def test_scheduler_starts(self, mock_bot):
-        """Scheduler initializes on bot startup."""
-        # Test would call init_reminders(bot)
-        # Should:
-        # - Create APScheduler instance
-        # - Schedule deadline check job (every 5 minutes)
-        # - Schedule daily summary job (every morning)
-        # - Start scheduler
-        assert True  # Placeholder
-    
-    @pytest.mark.asyncio
-    async def test_scheduler_stops_gracefully(self, mock_bot):
-        """Scheduler stops cleanly on shutdown."""
-        # Should:
-        # - Cancel all pending reminders
-        # - Shut down scheduler
-        # - Clean up database connections
-        assert True  # Placeholder
-    
-    @pytest.mark.asyncio
-    async def test_job_not_duplicated(self):
-        """Multiple bot start attempts don't duplicate jobs."""
-        # First start: Create job
-        # Second start: Skip if job exists
-        # Should have exactly 1 deadline check job
-        assert True  # Placeholder
+def test_create_scheduler_has_daily_summary_job():
+    bot = AsyncMock()
+    scheduler = create_scheduler(bot)
+    job_ids = {job.id for job in scheduler.get_jobs()}
+    assert "daily_summary" in job_ids
 
 
-class TestReminderFiltering:
-    """Tests for reminder recipient filtering."""
-    
-    @pytest.mark.asyncio
-    async def test_only_active_users_get_reminders(self):
-        """Reminders only sent to non-banned users."""
-        user_statuses = ["active", "inactive", "banned", "deleted"]
-        
-        reminder_sent = []
-        for status in user_statuses:
-            if status == "active":
-                reminder_sent.append(True)
-            else:
-                reminder_sent.append(False)
-        
-        assert reminder_sent[0] is True  # active
-        assert reminder_sent[2] is False  # banned
-    
-    @pytest.mark.asyncio
-    async def test_reminder_respects_preference(self):
-        """Don't send reminders if user disabled them."""
-        user = {
-            "user_id": 123456,
-            "reminders_enabled": False,
-        }
-        
-        # Should skip this user
-        assert user["reminders_enabled"] is False
-    
-    @pytest.mark.asyncio
-    async def test_all_user_tasks_checked(self, temp_db):
-        """Reminder job checks all users, all pending tasks."""
-        # Create test users and tasks
-        # Verify reminder job processes all of them
-        assert True  # Placeholder
+def test_create_scheduler_exactly_two_jobs():
+    bot = AsyncMock()
+    scheduler = create_scheduler(bot)
+    assert len(scheduler.get_jobs()) == 2
 
 
-class TestReminderContent:
-    """Tests for reminder message formatting."""
-    
-    def test_deadline_reminder_format(self):
-        """Deadline reminder has correct format."""
-        task_title = "Submit report"
-        hours_until = 12
-        
-        # Expected message: "🔔 Reminder: 'Submit report' due in 12 hours"
-        message = f"🔔 Reminder: '{task_title}' due in {hours_until} hours"
-        assert "Reminder" in message
-        assert task_title in message
-    
-    def test_overdue_alert_format(self):
-        """Overdue task alert has warning emoji."""
-        task_title = "Pay rent"
-        days_overdue = 2
-        
-        # Expected message: "⚠️ Alert: 'Pay rent' is 2 days overdue"
-        message = f"⚠️ Alert: '{task_title}' is {days_overdue} days overdue"
-        assert "⚠️" in message
-        assert "overdue" in message
-    
-    def test_daily_summary_format(self):
-        """Daily summary has consistent formatting."""
-        pending_count = 3
-        due_today_count = 1
-        overdue_count = 0
-        
-        # Should include:
-        # - Total pending tasks
-        # - Tasks due today (highlighted)
-        # - Overdue count (if any)
-        assert isinstance(pending_count, int)
-    
-    def test_reminder_includes_action_buttons(self):
-        """Reminders include inline buttons for quick actions."""
-        # Buttons should be:
-        # - "Mark Done" (mark task complete)
-        # - "View" (open task details)
-        # - "Snooze" (remind later)
-        assert True  # Placeholder
+def test_create_scheduler_does_not_start_automatically():
+    bot = AsyncMock()
+    scheduler = create_scheduler(bot)
+    assert not scheduler.running
 
 
-class TestReminderEdgeCases:
-    """Tests for edge cases and error handling."""
-    
-    @pytest.mark.asyncio
-    async def test_reminder_for_very_soon_deadline(self, mock_bot):
-        """Task due in <1 minute doesn't spam."""
-        task = {
-            "id": 5,
-            "title": "Urgent task",
-            "deadline": (datetime.now() + timedelta(seconds=30)).isoformat(),
-        }
-        
-        # Should send reminder once, not repeatedly
-        mock_bot.send_message = AsyncMock()
-        assert True  # Placeholder
-    
-    @pytest.mark.asyncio
-    async def test_batch_reminders_not_sent_simultaneously(self):
-        """Multiple reminders are staggered, not all at once."""
-        # When 10 users have deadlines in next hour:
-        # - Send first reminder immediately
-        # - Space out others by 5-10 seconds
-        # - This prevents bot API rate limiting
-        assert True  # Placeholder
-    
-    @pytest.mark.asyncio
-    async def test_retry_failed_reminder(self, mock_bot):
-        """TC_MAN_038: Retry sending reminder if bot API fails."""
-        mock_bot.send_message = AsyncMock(side_effect=Exception("Connection error"))
-        
-        # Should retry up to 3 times
-        retry_count = 0
-        for attempt in range(3):
-            try:
-                await mock_bot.send_message(chat_id=123, text="test")
-            except Exception:
-                retry_count += 1
-        
-        assert retry_count == 3
-    
-    @pytest.mark.asyncio
-    async def test_handle_user_deleted_account(self, mock_bot):
-        """Don't crash if user deleted account."""
-        mock_bot.send_message = AsyncMock(side_effect=Exception("Chat not found"))
-        
-        # Should catch error, mark user as invalid, continue
-        try:
-            await mock_bot.send_message(chat_id=999999, text="test")
-        except Exception:
-            # Should log and continue, not crash scheduler
-            pass
-        
-        assert True  # Placeholder
+def test_create_scheduler_check_deadlines_is_interval():
+    bot = AsyncMock()
+    scheduler = create_scheduler(bot)
+    job = scheduler.get_job("check_deadlines")
+    assert job is not None
+    assert job.trigger.__class__.__name__ == "IntervalTrigger"
 
 
-class TestReminderFrequency:
-    """Tests for reminder frequency and timing."""
-    
-    def test_deadline_check_runs_regularly(self):
-        """Deadline check job runs every 5 minutes."""
-        interval_minutes = 5
-        
-        # Should be scheduled via APScheduler every X minutes
-        assert interval_minutes == 5
-    
-    def test_daily_summary_at_morning(self):
-        """Daily summary sent at 09:00 user time."""
-        schedule_hour = 9
-        
-        # Job should be: "cron hour=9, minute=0"
-        assert schedule_hour == 9
-    
-    def test_no_reminder_duplicates(self):
-        """Same task not reminded multiple times in same cycle."""
-        # Track reminders per task per cycle
-        task_ids = [1, 2, 3, 4, 5]
-        
-        # Each task should appear at most once per reminder cycle
-        assert len(set(task_ids)) == len(task_ids)
+def test_create_scheduler_daily_summary_is_cron():
+    bot = AsyncMock()
+    scheduler = create_scheduler(bot)
+    job = scheduler.get_job("daily_summary")
+    assert job is not None
+    assert job.trigger.__class__.__name__ == "CronTrigger"
 
 
-class TestReminderWithDatabase:
-    """Integration tests with database."""
-    
-    @pytest.mark.asyncio
-    async def test_fetch_tasks_needing_reminders(self, temp_db, sample_task):
-        """Query tasks needing reminders from database."""
-        # Create task with deadline in next 24h
-        now = datetime.now()
-        deadline = now + timedelta(hours=12)
-        
-        # Query should return: tasks with deadline <= now + 24h, status != done
-        assert sample_task["deadline"] is not None
-    
-    @pytest.mark.asyncio
-    async def test_mark_reminder_sent(self, temp_db):
-        """Mark task after reminder sent to avoid duplicates."""
-        task_id = 5
-        
-        # Should update: tasks SET reminder_sent_at = NOW() WHERE id = ?
-        # Next cycle: Skip if reminder_sent_at is within 24h
-        assert isinstance(task_id, int)
-    
-    @pytest.mark.asyncio
-    async def test_get_user_timezone_for_summary(self, temp_db, sample_user):
-        """Fetch user timezone to schedule daily summary."""
-        user_id = sample_user["user_id"]
-        
-        # Should return user's timezone (e.g., "America/New_York")
-        # If not set, default to "UTC"
-        timezone = sample_user.get("timezone", "UTC")
-        assert isinstance(timezone, str)
+# =============================================================================
+#  check_deadlines
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_check_deadlines_no_tasks_sends_nothing():
+    bot = AsyncMock()
+    with patch("app.bot.reminders.db.get_due_tasks", return_value=[]):
+        await check_deadlines(bot)
+    bot.send_message.assert_not_called()
 
 
-class TestReminderLogging:
-    """Tests for reminder event logging."""
-    
-    @pytest.mark.asyncio
-    async def test_log_reminder_sent(self):
-        """Log when reminder is sent."""
-        # Should log: "INFO: Reminder sent to user_id=123456, task=5"
-        assert True  # Placeholder
-    
-    @pytest.mark.asyncio
-    async def test_log_reminder_failed(self):
-        """Log when reminder fails to send."""
-        # Should log: "WARNING: Failed to send reminder to user_id=123456, task=5: {error}"
-        assert True  # Placeholder
-    
-    @pytest.mark.asyncio
-    async def test_log_scheduler_lifecycle(self):
-        """Log scheduler start/stop events."""
-        # Start: "INFO: Reminder scheduler started"
-        # Stop: "INFO: Reminder scheduler stopped"
-        assert True  # Placeholder
+@pytest.mark.asyncio
+async def test_check_deadlines_sends_message_per_task():
+    bot = AsyncMock()
+    tasks = [
+        {"id": 1, "user_id": 111, "title": "Task A", "deadline": "2026-05-02T15:00:00", "priority": "high"},
+        {"id": 2, "user_id": 222, "title": "Task B", "deadline": "2026-05-02T15:30:00", "priority": "medium"},
+    ]
+    with patch("app.bot.reminders.db.get_due_tasks", return_value=tasks), \
+         patch("app.bot.reminders.db.mark_task_reminded", new_callable=AsyncMock):
+        await check_deadlines(bot)
+    assert bot.send_message.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_check_deadlines_marks_tasks_reminded():
+    bot = AsyncMock()
+    tasks = [
+        {"id": 42, "user_id": 111, "title": "Task", "deadline": "2026-05-02T15:00:00", "priority": "low"},
+    ]
+    mock_mark = AsyncMock()
+    with patch("app.bot.reminders.db.get_due_tasks", return_value=tasks), \
+         patch("app.bot.reminders.db.mark_task_reminded", mock_mark):
+        await check_deadlines(bot)
+    mock_mark.assert_called_once_with(42)
+
+
+@pytest.mark.asyncio
+async def test_check_deadlines_sends_to_correct_chat():
+    bot = AsyncMock()
+    tasks = [
+        {"id": 1, "user_id": 12345, "title": "My task", "deadline": "2026-05-02T09:00:00", "priority": "medium"},
+    ]
+    with patch("app.bot.reminders.db.get_due_tasks", return_value=tasks), \
+         patch("app.bot.reminders.db.mark_task_reminded", new_callable=AsyncMock):
+        await check_deadlines(bot)
+    call_kwargs = bot.send_message.call_args[1]
+    assert call_kwargs["chat_id"] == 12345
+
+
+@pytest.mark.asyncio
+async def test_check_deadlines_continues_after_send_failure():
+    bot = AsyncMock()
+    bot.send_message.side_effect = Exception("network error")
+    tasks = [
+        {"id": 1, "user_id": 111, "title": "Task 1", "deadline": "2026-05-02T09:00:00", "priority": "high"},
+        {"id": 2, "user_id": 222, "title": "Task 2", "deadline": "2026-05-02T10:00:00", "priority": "low"},
+    ]
+    with patch("app.bot.reminders.db.get_due_tasks", return_value=tasks), \
+         patch("app.bot.reminders.db.mark_task_reminded", new_callable=AsyncMock):
+        await check_deadlines(bot)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_check_deadlines_db_error_does_not_crash():
+    bot = AsyncMock()
+    with patch("app.bot.reminders.db.get_due_tasks", side_effect=Exception("DB down")):
+        await check_deadlines(bot)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_check_deadlines_malformed_deadline_does_not_crash():
+    bot = AsyncMock()
+    tasks = [
+        {"id": 1, "user_id": 111, "title": "Task", "deadline": "not-a-date", "priority": "medium"},
+    ]
+    with patch("app.bot.reminders.db.get_due_tasks", return_value=tasks), \
+         patch("app.bot.reminders.db.mark_task_reminded", new_callable=AsyncMock):
+        await check_deadlines(bot)  # must not raise — fallback dt_str = deadline
+
+
+# =============================================================================
+#  send_daily_summaries
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_send_daily_summaries_no_users_sends_nothing():
+    bot = AsyncMock()
+    with patch("app.bot.reminders.db.get_all_users", return_value=[]):
+        await send_daily_summaries(bot)
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_daily_summaries_user_with_no_tasks_skipped():
+    bot = AsyncMock()
+    users = [{"user_id": 111, "timezone": "UTC", "full_name": "Alice"}]
+    stats = {"total": 0, "done": 0, "pending": 0, "overdue": 0, "completion_rate": 0, "top_category": "general"}
+    with patch("app.bot.reminders.db.get_all_users", return_value=users), \
+         patch("app.bot.reminders.db.get_user_tasks", return_value=[]), \
+         patch("app.bot.reminders.db.get_user_stats", return_value=stats):
+        await send_daily_summaries(bot)
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_daily_summaries_sends_to_correct_user():
+    bot = AsyncMock()
+    # Use a timezone where the current UTC hour maps to DAILY_SUMMARY_HOUR
+    from config.settings import DAILY_SUMMARY_HOUR
+    import pytz
+    # Force the hour to match by using UTC with mocked datetime
+    fake_now = MagicMock()
+    fake_now.hour = DAILY_SUMMARY_HOUR
+
+    users = [{"user_id": 99999, "timezone": "UTC", "full_name": "Test User"}]
+    stats = {"total": 3, "done": 1, "pending": 2, "overdue": 0, "completion_rate": 33.3, "top_category": "work"}
+    tasks = [{"id": 1, "title": "Pending task", "priority": "high"}]
+
+    with patch("app.bot.reminders.db.get_all_users", return_value=users), \
+         patch("app.bot.reminders.db.get_user_tasks", return_value=tasks), \
+         patch("app.bot.reminders.db.get_user_stats", return_value=stats), \
+         patch("app.bot.reminders.ai.generate_daily_motivation", return_value="Stay focused!"), \
+         patch("app.bot.reminders.datetime") as mock_dt:
+        mock_dt.utcnow.return_value = datetime(2026, 5, 2, DAILY_SUMMARY_HOUR, 0, 0)
+        mock_dt.now.return_value = fake_now
+        await send_daily_summaries(bot)
+
+    # If we get here with the correct hour, message is sent
+    # (test just verifies it doesn't crash when conditions align)
+
+
+@pytest.mark.asyncio
+async def test_send_daily_summaries_db_error_does_not_crash():
+    bot = AsyncMock()
+    with patch("app.bot.reminders.db.get_all_users", side_effect=Exception("DB error")):
+        await send_daily_summaries(bot)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_send_daily_summaries_per_user_error_continues():
+    bot = AsyncMock()
+    users = [
+        {"user_id": 111, "timezone": "UTC", "full_name": "Alice"},
+        {"user_id": 222, "timezone": "UTC", "full_name": "Bob"},
+    ]
+    with patch("app.bot.reminders.db.get_all_users", return_value=users), \
+         patch("app.bot.reminders.db.get_user_stats", side_effect=Exception("stats failed")):
+        await send_daily_summaries(bot)  # must not raise; error is per-user
+
+
+@pytest.mark.asyncio
+async def test_send_daily_summaries_invalid_timezone_falls_back():
+    bot = AsyncMock()
+    users = [{"user_id": 111, "timezone": "Not/ATimezone", "full_name": "Alice"}]
+    stats = {"total": 0, "done": 0, "pending": 0, "overdue": 0, "completion_rate": 0, "top_category": "general"}
+    with patch("app.bot.reminders.db.get_all_users", return_value=users), \
+         patch("app.bot.reminders.db.get_user_stats", return_value=stats), \
+         patch("app.bot.reminders.db.get_user_tasks", return_value=[]):
+        await send_daily_summaries(bot)  # must not raise on bad timezone

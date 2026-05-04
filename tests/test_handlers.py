@@ -1,377 +1,946 @@
 """
-tests/test_handlers.py — Unit tests for app/bot/handlers.py
-
-Tests bot command handlers and callback functions.
+tests/test_handlers.py — Comprehensive tests for app/bot/handlers.py.
+Covers _delete, _safe_edit, all command handlers, menu handlers,
+task action handlers, and inline callbacks using mocked Telegram objects.
 """
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timedelta
-from telegram import Update, User, Message, Chat
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch, call
+from telegram.error import BadRequest
+from telegram.ext import ConversationHandler
+
+from app.bot.handlers import (
+    _delete, _safe_edit,
+    cmd_start, cmd_help, cmd_mytasks, cmd_mytask, cmd_done,
+    cmd_deletetask, cmd_stats, cmd_settimezone,
+    msg_handle_menu_mytasks, msg_handle_menu_stats,
+    msg_handle_menu_filters, msg_handle_filter,
+    msg_handle_menu_timezone, msg_handle_timezone,
+    msg_back_to_menu, _render_task_list,
+    msg_handle_task_done, msg_handle_task_edit,
+    msg_handle_task_delete, msg_handle_task_delete_confirm,
+    msg_handle_task_delete_cancel,
+    callback_task_view, callback_main_menu,
+    unknown_command,
+    AT_TITLE, EDIT_FIELD, _TIMEZONE_MAP, _FILTER_MAP, EDIT_FIELDS,
+)
 
 
-class TestCommandHandlers:
-    """Tests for bot command handlers."""
-    
-    @pytest.mark.asyncio
-    async def test_start_command(self, mock_bot, sample_user):
-        """TC_CMD_001: /start command registers user."""
-        # Setup
-        update = MagicMock(spec=Update)
-        update.effective_user = User(
-            id=sample_user["user_id"],
-            first_name="Test",
-            is_bot=False
-        )
-        update.message = AsyncMock()
-        
-        context = MagicMock()
-        
-        # Test would call cmd_start(update, context)
-        # Mock would verify database insert and message sent
-        assert update.effective_user.id == sample_user["user_id"]
-    
-    @pytest.mark.asyncio
-    async def test_help_command(self, mock_bot):
-        """TC_CMD_002: /help displays command reference."""
-        update = MagicMock(spec=Update)
-        update.effective_user = User(id=123456, first_name="Test", is_bot=False)
-        update.message = AsyncMock()
-        
-        # Test would call cmd_help(update, context)
-        # Should send help message with all commands
-        assert update.effective_user.id == 123456
-    
-    @pytest.mark.asyncio
-    async def test_mytasks_command(self, mock_bot):
-        """TC_CMD_007: /mytasks lists user's pending tasks."""
-        update = MagicMock(spec=Update)
-        update.effective_user = User(id=123456, first_name="Test", is_bot=False)
-        update.message = AsyncMock()
-        
-        # Test would call cmd_mytasks(update, context)
-        # Should fetch pending tasks and send list
-        assert True  # Placeholder
-    
-    @pytest.mark.asyncio
-    async def test_mytasks_empty_list(self, mock_bot):
-        """TC_CMD_008: /mytasks with no tasks shows empty message."""
-        update = MagicMock(spec=Update)
-        update.effective_user = User(id=999999, first_name="Empty", is_bot=False)
-        update.message = AsyncMock()
-        
-        # Should return "No pending tasks" message
-        assert True  # Placeholder
-    
-    @pytest.mark.asyncio
-    async def test_done_command_success(self, mock_bot):
-        """TC_CMD_009: /done marks task as complete."""
-        update = MagicMock(spec=Update)
-        update.effective_user = User(id=123456, first_name="Test", is_bot=False)
-        update.message = AsyncMock()
-        
-        context = MagicMock()
-        context.args = ["5"]  # Task ID
-        
-        # Test would call cmd_done(update, context)
-        # Should update database and send confirmation
-        assert context.args[0] == "5"
-    
-    @pytest.mark.asyncio
-    async def test_done_command_invalid_id(self, mock_bot):
-        """TC_CMD_010: /done with invalid task ID shows error."""
-        update = MagicMock(spec=Update)
-        update.effective_user = User(id=123456, first_name="Test", is_bot=False)
-        update.message = AsyncMock()
-        
-        context = MagicMock()
-        context.args = ["99999"]  # Non-existent task
-        
-        # Should return "Task not found" error
-        assert True  # Placeholder
-    
-    @pytest.mark.asyncio
-    async def test_stats_command(self, mock_bot, sample_stats):
-        """TC_CMD_011: /stats displays user statistics."""
-        update = MagicMock(spec=Update)
-        update.effective_user = User(id=123456, first_name="Test", is_bot=False)
-        update.message = AsyncMock()
-        
-        # Test would call cmd_stats(update, context)
-        # Should fetch stats and send formatted message
-        assert sample_stats["completion_rate"] == 70.0
-    
-    @pytest.mark.asyncio
-    async def test_settimezone_command(self, mock_bot):
-        """TC_CMD_012: /settimezone updates user timezone."""
-        update = MagicMock(spec=Update)
-        update.effective_user = User(id=123456, first_name="Test", is_bot=False)
-        update.message = AsyncMock()
-        
-        # Test would call cmd_settimezone(update, context)
-        # Should prompt for timezone selection
-        assert True  # Placeholder
+# =============================================================================
+#  Mock factories
+# =============================================================================
+
+def _sent():
+    """A mock message as returned by send_message / reply_text."""
+    m = AsyncMock()
+    m.chat_id = 1111
+    m.chat = AsyncMock()
+    m.chat.send_message = AsyncMock(return_value=AsyncMock())
+    m.delete = AsyncMock()
+    m.edit_text = AsyncMock()
+    return m
 
 
-class TestAddTaskConversation:
-    """Tests for /addtask conversation flow."""
-    
-    @pytest.mark.asyncio
-    async def test_addtask_step1_title(self, mock_bot):
-        """Test first step of /addtask conversation."""
-        update = MagicMock(spec=Update)
-        update.effective_user = User(id=123456, first_name="Test", is_bot=False)
-        update.message = MagicMock()
-        update.message.text = "Finish report"
-        update.message.reply_text = AsyncMock()
-        
-        # Should prompt for description
-        assert "Finish report" in update.message.text
-    
-    @pytest.mark.asyncio
-    async def test_addtask_skip_description(self, mock_bot):
-        """TC_MAN_005: Skip optional description step."""
-        update = MagicMock(spec=Update)
-        update.message = MagicMock()
-        update.message.text = "⏭ Skip"
-        
-        # Should continue to category step
-        assert "Skip" in update.message.text
-    
-    @pytest.mark.asyncio
-    async def test_addtask_invalid_deadline(self, mock_bot):
-        """TC_CMD_005: Handle invalid deadline format."""
-        update = MagicMock(spec=Update)
-        update.message = MagicMock()
-        update.message.text = "xyz 123 invalid"
-        
-        # Should return error message with format hints
-        assert "xyz" in update.message.text
-    
-    @pytest.mark.asyncio
-    async def test_addtask_valid_deadline_formats(self):
-        """Test various valid deadline formats."""
-        valid_formats = [
-            "tomorrow",
-            "today",
-            "next friday",
-            "2026-03-25 14:00",
-            "in 3 days",
-            "next monday",
-        ]
-        
-        for format_str in valid_formats:
-            assert isinstance(format_str, str)
+def _make_update(user_id=1111, text="", username="tester", full_name="Tester User"):
+    upd = MagicMock()
+    upd.effective_user = MagicMock()
+    upd.effective_user.id = user_id
+    upd.effective_user.username = username
+    upd.effective_user.full_name = full_name
+    upd.effective_user.first_name = "Tester"
+
+    sent_msg = _sent()
+    upd.message = AsyncMock()
+    upd.message.text = text
+    upd.message.reply_text = AsyncMock(return_value=sent_msg)
+    upd.message.delete = AsyncMock()
+
+    upd.effective_chat = AsyncMock()
+    upd.effective_chat.send_message = AsyncMock(return_value=sent_msg)
+    return upd
 
 
-class TestAddTaskAIConversation:
-    """Tests for /addtask_ai natural language flow."""
-    
-    @pytest.mark.asyncio
-    async def test_addtask_ai_simple_input(self, mock_bot):
-        """TC_MAN_008: AI parses simple natural language."""
-        update = MagicMock(spec=Update)
-        update.message = MagicMock()
-        update.message.text = "Submit project proposal by Friday, high priority"
-        
-        # Should parse and create task
-        assert "Friday" in update.message.text
-    
-    @pytest.mark.asyncio
-    async def test_addtask_ai_complex_input(self, mock_bot):
-        """TC_MAN_009: AI parses detailed natural language."""
-        update = MagicMock(spec=Update)
-        update.message = MagicMock()
-        update.message.text = "Study for chemistry exam Monday morning, midterm so urgent, review chapters 5-8"
-        
-        # Should extract all fields
-        assert "exam" in update.message.text
-        assert "Monday" in update.message.text
+def _make_cb_update(data="task_view_1", user_id=1111):
+    upd = MagicMock()
+    upd.effective_user = MagicMock()
+    upd.effective_user.id = user_id
+
+    upd.callback_query = AsyncMock()
+    upd.callback_query.data = data
+    upd.callback_query.from_user = MagicMock()
+    upd.callback_query.from_user.id = user_id
+    upd.callback_query.answer = AsyncMock()
+
+    sent_msg = _sent()
+    upd.callback_query.message = AsyncMock()
+    upd.callback_query.message.chat = AsyncMock()
+    upd.callback_query.message.chat.send_message = AsyncMock(return_value=sent_msg)
+    upd.callback_query.message.delete = AsyncMock()
+    upd.callback_query.message.edit_text = AsyncMock()
+    return upd
 
 
-class TestCallbackHandlers:
-    """Tests for inline button callbacks."""
-    
-    @pytest.mark.asyncio
-    async def test_callback_task_view(self, mock_bot):
-        """TC_CB_001: Task view button displays details."""
-        update = MagicMock(spec=Update)
-        update.callback_query = MagicMock()
-        update.callback_query.data = "task_view_5"
-        update.callback_query.answer = AsyncMock()
-        update.callback_query.edit_message_text = AsyncMock()
-        
-        # Should fetch task and display details
-        task_id = update.callback_query.data.split("_")[-1]
-        assert task_id == "5"
-    
-    @pytest.mark.asyncio
-    async def test_callback_task_done(self, mock_bot):
-        """TC_CB_002: Task done button marks task complete."""
-        update = MagicMock(spec=Update)
-        update.callback_query = MagicMock()
-        update.callback_query.data = "task_done_5"
-        update.callback_query.from_user = User(id=123456, first_name="Test", is_bot=False)
-        update.callback_query.answer = AsyncMock()
-        update.callback_query.edit_message_text = AsyncMock()
-        
-        # Should update status to done
-        task_id = update.callback_query.data.split("_")[-1]
-        assert task_id == "5"
-    
-    @pytest.mark.asyncio
-    async def test_callback_task_delete_confirm(self, mock_bot):
-        """TC_CB_003: Task delete button prompts confirmation."""
-        update = MagicMock(spec=Update)
-        update.callback_query = MagicMock()
-        update.callback_query.data = "task_del_5"
-        update.callback_query.answer = AsyncMock()
-        update.callback_query.edit_message_text = AsyncMock()
-        
-        # Should show confirmation keyboard
-        task_id = update.callback_query.data.split("_")[-1]
-        assert task_id == "5"
-    
-    @pytest.mark.asyncio
-    async def test_callback_task_delete_confirmed(self, mock_bot):
-        """TC_CB_004: Confirmed delete removes task."""
-        update = MagicMock(spec=Update)
-        update.callback_query = MagicMock()
-        update.callback_query.data = "task_del_confirm_5"
-        update.callback_query.from_user = User(id=123456, first_name="Test", is_bot=False)
-        update.callback_query.answer = AsyncMock()
-        update.callback_query.edit_message_text = AsyncMock()
-        
-        # Should delete from database
-        task_id = update.callback_query.data.split("_")[-1]
-        assert task_id == "5"
-    
-    @pytest.mark.asyncio
-    async def test_callback_menu_filters(self, mock_bot):
-        """TC_CB_005-006: Menu filter buttons update task list."""
-        filter_buttons = [
-            "menu_filter_pending",
-            "menu_filter_done",
-            "menu_filter_progress",
-            "menu_filter_work",
-            "menu_filter_study",
-        ]
-        
-        for button_data in filter_buttons:
-            update = MagicMock(spec=Update)
-            update.callback_query = MagicMock()
-            update.callback_query.data = button_data
-            update.callback_query.answer = AsyncMock()
-            
-            # Should filter tasks accordingly
-            assert button_data.startswith("menu_filter_")
+def _make_context(user_data=None, args=None):
+    ctx = MagicMock()
+    ctx.user_data = dict(user_data) if user_data else {}
+    ctx.args = list(args) if args else []
+    return ctx
 
 
-class TestDeadlineParser:
-    """Tests for deadline parsing utility."""
-    
-    def test_parse_natural_deadlines(self):
-        """Test parsing natural language deadline expressions."""
-        deadlines = [
-            ("today", "today"),
-            ("tomorrow", "tomorrow"),
-            ("next friday", "friday"),
-            ("next week", "week"),
-            ("in 3 days", "days"),
-        ]
-        
-        for input_text, expected_hint in deadlines:
-            assert expected_hint.lower() in input_text.lower()
-    
-    def test_parse_structured_deadlines(self):
-        """Test parsing structured date formats."""
-        formats = [
-            "2026-03-25",
-            "2026-03-25 14:00",
-            "03/25/2026",
-            "25/03/2026",
-            "25.03.2026",
-        ]
-        
-        for date_format in formats:
-            assert isinstance(date_format, str)
-    
-    def test_parse_invalid_deadline(self):
-        """Test handling of invalid deadline."""
-        invalid = "xyz 123 invalid"
-        
-        # Should return error hint
-        assert isinstance(invalid, str)
+_TASK = {
+    "id": 1, "user_id": 1111, "title": "Test task",
+    "description": "desc", "status": "pending",
+    "category": "work", "priority": "high",
+    "deadline": "2026-06-01T09:00:00",
+    "created_at": "2026-01-01T00:00:00", "updated_at": "2026-01-01T00:00:00",
+    "reminded_at": None,
+}
+_STATS = {
+    "total": 5, "done": 3, "pending": 2, "overdue": 0,
+    "completion_rate": 60.0, "top_category": "work",
+}
+_USER_ROW = {
+    "user_id": 1111, "username": "tester",
+    "full_name": "Tester User", "timezone": "UTC",
+}
 
 
-class TestErrorHandling:
-    """Tests for error handling in handlers."""
-    
-    @pytest.mark.asyncio
-    async def test_command_without_args(self, mock_bot):
-        """TC_MAN_029: Command missing required arguments."""
-        update = MagicMock(spec=Update)
-        update.effective_user = User(id=123456, first_name="Test", is_bot=False)
-        update.message = AsyncMock()
-        
-        context = MagicMock()
-        context.args = []  # No arguments
-        
-        # Should show usage error
-        assert len(context.args) == 0
-    
-    @pytest.mark.asyncio
-    async def test_rapid_button_clicks(self, mock_bot):
-        """TC_MAN_030: Rapid clicks don't create duplicates."""
-        # Simulate rapid clicks
-        for i in range(5):
-            update = MagicMock(spec=Update)
-            update.callback_query = MagicMock()
-            update.callback_query.data = "task_done_5"
-            update.callback_query.answer = AsyncMock()
-            
-            # Each click should be handled
-            assert update.callback_query.data == "task_done_5"
-    
-    @pytest.mark.asyncio
-    async def test_task_not_found(self, mock_bot):
-        """TC_MAN_020: Task not found returns error."""
-        update = MagicMock(spec=Update)
-        update.callback_query = MagicMock()
-        update.callback_query.data = "task_view_99999"
-        update.callback_query.answer = AsyncMock()
-        
-        # Should return "Task not found"
-        assert True  # Placeholder
+# =============================================================================
+#  _delete
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_delete_none_is_noop():
+    await _delete(None)
 
 
-class TestLogging:
-    """Tests for logging in handlers."""
-    
-    @pytest.mark.asyncio
-    async def test_start_logs_user_action(self, mock_bot):
-        """Verify /start command logs user action."""
-        update = MagicMock(spec=Update)
-        update.effective_user = User(
-            id=123456,
-            first_name="Test",
-            username="test_user",
-            is_bot=False
-        )
-        
-        # Should log: "User @test_user (ID: 123456) started the bot"
-        assert update.effective_user.id == 123456
-    
-    @pytest.mark.asyncio
-    async def test_task_creation_logs(self, mock_bot):
-        """Verify task creation logs INFO message."""
-        # Should log: "Task created: ID=X, user=Y, title='...'"
-        assert True  # Placeholder
-    
-    @pytest.mark.asyncio
-    async def test_invalid_input_warns(self, mock_bot):
-        """Verify invalid input generates WARNING log."""
-        invalid_text = "xyz invalid"
-        
-        # Should log: "WARNING: Invalid input..."
-        assert isinstance(invalid_text, str)
+@pytest.mark.asyncio
+async def test_delete_calls_message_delete():
+    msg = AsyncMock()
+    await _delete(msg)
+    msg.delete.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_swallows_exception():
+    msg = AsyncMock()
+    msg.delete.side_effect = Exception("already deleted")
+    await _delete(msg)
+
+
+@pytest.mark.asyncio
+async def test_delete_swallows_bad_request():
+    msg = AsyncMock()
+    msg.delete.side_effect = BadRequest("Message to delete not found")
+    await _delete(msg)
+
+
+# =============================================================================
+#  _safe_edit
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_safe_edit_calls_edit_text():
+    msg = AsyncMock()
+    await _safe_edit(msg, "hello")
+    msg.edit_text.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_safe_edit_passes_reply_markup():
+    msg = AsyncMock()
+    markup = MagicMock()
+    await _safe_edit(msg, "text", reply_markup=markup)
+    _, kwargs = msg.edit_text.call_args
+    assert kwargs.get("reply_markup") == markup
+
+
+@pytest.mark.asyncio
+async def test_safe_edit_swallows_not_modified():
+    msg = AsyncMock()
+    msg.edit_text.side_effect = BadRequest("Message is not modified")
+    await _safe_edit(msg, "same text")
+
+
+@pytest.mark.asyncio
+async def test_safe_edit_swallows_cant_be_edited():
+    msg = AsyncMock()
+    msg.edit_text.side_effect = BadRequest("Message can't be edited")
+    await _safe_edit(msg, "old")
+
+
+@pytest.mark.asyncio
+async def test_safe_edit_swallows_can_not_be_edited():
+    msg = AsyncMock()
+    msg.edit_text.side_effect = BadRequest("Message can not be edited")
+    await _safe_edit(msg, "old")
+
+
+@pytest.mark.asyncio
+async def test_safe_edit_reraises_other_bad_request():
+    msg = AsyncMock()
+    msg.edit_text.side_effect = BadRequest("Something else")
+    with pytest.raises(BadRequest):
+        await _safe_edit(msg, "text")
+
+
+@pytest.mark.asyncio
+async def test_safe_edit_swallows_cant_edited_uppercase():
+    msg = AsyncMock()
+    msg.edit_text.side_effect = BadRequest("MESSAGE CAN'T BE EDITED")
+    await _safe_edit(msg, "text")
+
+
+# =============================================================================
+#  State constants / maps
+# =============================================================================
+
+def test_conversation_states_are_unique():
+    from app.bot.handlers import (
+        AT_TITLE, AT_DESCRIPTION, AT_CATEGORY, AT_PRIORITY, AT_DEADLINE,
+        AI_INPUT, EDIT_FIELD, EDIT_VALUE,
+    )
+    states = [AT_TITLE, AT_DESCRIPTION, AT_CATEGORY, AT_PRIORITY, AT_DEADLINE,
+              AI_INPUT, EDIT_FIELD, EDIT_VALUE]
+    assert len(states) == len(set(states))
+
+
+def test_edit_fields_complete():
+    assert set(EDIT_FIELDS) == {"Title", "Description", "Category", "Priority", "Deadline", "Status"}
+
+
+def test_timezone_map_utc():
+    assert _TIMEZONE_MAP["🌍 UTC"] == "UTC"
+
+
+def test_timezone_map_tashkent():
+    assert _TIMEZONE_MAP["🌍 Tashkent"] == "Asia/Tashkent"
+
+
+def test_filter_map_status_filters():
+    statuses = {v[1] for v in _FILTER_MAP.values() if v[0] == "status"}
+    assert {"pending", "done", "in_progress"}.issubset(statuses)
+
+
+def test_filter_map_category_filters():
+    categories = {v[1] for v in _FILTER_MAP.values() if v[0] == "category"}
+    assert {"work", "study", "personal", "health", "finance"}.issubset(categories)
+
+
+def test_filter_map_tuple_format():
+    for key, val in _FILTER_MAP.items():
+        assert isinstance(val, tuple) and len(val) == 2
+        assert val[0] in ("status", "category")
+
+
+# =============================================================================
+#  cmd_start
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_cmd_start_upserts_user():
+    upd = _make_update(user_id=999, username="alice", full_name="Alice")
+    ctx = _make_context()
+    with patch("app.bot.handlers.db.upsert_user", new_callable=AsyncMock) as mock_up:
+        await cmd_start(upd, ctx)
+    mock_up.assert_called_once_with(999, "alice", "Alice")
+
+
+@pytest.mark.asyncio
+async def test_cmd_start_sends_welcome():
+    upd = _make_update()
+    ctx = _make_context()
+    with patch("app.bot.handlers.db.upsert_user", new_callable=AsyncMock):
+        await cmd_start(upd, ctx)
+    upd.message.reply_text.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_cmd_start_username_none_uses_empty():
+    upd = _make_update()
+    upd.effective_user.username = None
+    ctx = _make_context()
+    with patch("app.bot.handlers.db.upsert_user", new_callable=AsyncMock) as mock_up:
+        await cmd_start(upd, ctx)
+    args = mock_up.call_args[0]
+    assert args[1] == ""
+
+
+@pytest.mark.asyncio
+async def test_cmd_start_full_name_none_uses_first_name():
+    upd = _make_update()
+    upd.effective_user.full_name = None
+    upd.effective_user.first_name = "Bob"
+    ctx = _make_context()
+    with patch("app.bot.handlers.db.upsert_user", new_callable=AsyncMock) as mock_up:
+        await cmd_start(upd, ctx)
+    args = mock_up.call_args[0]
+    assert args[2] == "Bob"
+
+
+# =============================================================================
+#  cmd_help
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_cmd_help_sends_reply():
+    upd = _make_update()
+    ctx = _make_context()
+    await cmd_help(upd, ctx)
+    upd.message.reply_text.assert_called_once()
+
+
+# =============================================================================
+#  msg_handle_menu_mytasks
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_menu_mytasks_renders_list():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context()
+    with patch("app.bot.handlers.db.get_user_tasks", return_value=[_TASK]):
+        await msg_handle_menu_mytasks(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_menu_mytasks_stores_menu_msg():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context()
+    with patch("app.bot.handlers.db.get_user_tasks", return_value=[]):
+        await msg_handle_menu_mytasks(upd, ctx)
+    assert "menu_msg" in ctx.user_data
+
+
+# =============================================================================
+#  msg_handle_menu_stats
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_menu_stats_with_user():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context()
+    with patch("app.bot.handlers.db.get_user", return_value=_USER_ROW), \
+         patch("app.bot.handlers.db.get_user_stats", return_value=_STATS), \
+         patch("app.bot.handlers.ai.generate_daily_motivation", return_value="Go!"):
+        await msg_handle_menu_stats(upd, ctx)
+    assert upd.effective_chat.send_message.call_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_menu_stats_user_none_uses_default_name():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context()
+    with patch("app.bot.handlers.db.get_user", return_value=None), \
+         patch("app.bot.handlers.db.get_user_stats", return_value=_STATS), \
+         patch("app.bot.handlers.ai.generate_daily_motivation", return_value="Go!"):
+        await msg_handle_menu_stats(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+
+
+# =============================================================================
+#  msg_handle_menu_filters
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_menu_filters_clears_task_state():
+    upd = _make_update()
+    ctx = _make_context(user_data={"current_task_id": 5, "active_msg": MagicMock()})
+    await msg_handle_menu_filters(upd, ctx)
+    assert "current_task_id" not in ctx.user_data
+    assert "active_msg" not in ctx.user_data
+
+
+@pytest.mark.asyncio
+async def test_menu_filters_sends_filter_keyboard():
+    upd = _make_update()
+    ctx = _make_context()
+    await msg_handle_menu_filters(upd, ctx)
+    upd.effective_chat.send_message.assert_called_once()
+    assert "menu_msg" in ctx.user_data
+
+
+# =============================================================================
+#  msg_handle_filter
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_handle_filter_status_pending():
+    upd = _make_update(text="⏳ Pending")
+    ctx = _make_context()
+    with patch("app.bot.handlers.db.get_user_tasks", return_value=[_TASK]):
+        await msg_handle_filter(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_filter_category_work():
+    upd = _make_update(text="💼 Work")
+    ctx = _make_context()
+    with patch("app.bot.handlers.db.get_user_tasks", return_value=[]):
+        await msg_handle_filter(upd, ctx)
+
+
+@pytest.mark.asyncio
+async def test_handle_filter_unknown_button_returns_early():
+    upd = _make_update(text="🤷 Unknown")
+    ctx = _make_context()
+    await msg_handle_filter(upd, ctx)
+    upd.effective_chat.send_message.assert_not_called()
+
+
+# =============================================================================
+#  msg_handle_menu_timezone
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_menu_timezone_sends_keyboard():
+    upd = _make_update()
+    ctx = _make_context()
+    await msg_handle_menu_timezone(upd, ctx)
+    upd.effective_chat.send_message.assert_called_once()
+    assert "menu_msg" in ctx.user_data
+
+
+# =============================================================================
+#  msg_handle_timezone
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_handle_timezone_valid():
+    upd = _make_update(text="🌍 UTC")
+    ctx = _make_context(user_data={"user_id": 1111})
+    with patch("app.bot.handlers.db.update_user_preferences", new_callable=AsyncMock):
+        await msg_handle_timezone(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_timezone_unknown_button():
+    upd = _make_update(text="🌍 NotACity")
+    ctx = _make_context()
+    await msg_handle_timezone(upd, ctx)
+    call_text = upd.effective_chat.send_message.call_args[0][0]
+    assert "Invalid" in call_text or "invalid" in call_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_handle_timezone_pytz_error():
+    upd = _make_update(text="🌍 UTC")
+    ctx = _make_context()
+    with patch("app.bot.handlers.pytz.timezone", side_effect=Exception("bad tz")), \
+         patch("app.bot.handlers.db.update_user_preferences", new_callable=AsyncMock):
+        await msg_handle_timezone(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+
+
+# =============================================================================
+#  msg_back_to_menu
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_back_to_menu_sends_message():
+    upd = _make_update()
+    ctx = _make_context()
+    await msg_back_to_menu(upd, ctx)
+    upd.effective_chat.send_message.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_back_to_menu_deletes_active_msg():
+    upd = _make_update()
+    active = AsyncMock()
+    ctx = _make_context(user_data={"active_msg": active})
+    await msg_back_to_menu(upd, ctx)
+    active.delete.assert_called_once()
+    assert "active_msg" not in ctx.user_data
+
+
+# =============================================================================
+#  _render_task_list
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_render_task_list_no_tasks_sends_clear_message():
+    msg = _sent()
+    with patch("app.bot.handlers.db.get_user_tasks", return_value=[]):
+        await _render_task_list(msg, 1111)
+    msg.chat.send_message.assert_called_once()
+    text = msg.chat.send_message.call_args[0][0]
+    assert "No tasks" in text
+
+
+@pytest.mark.asyncio
+async def test_render_task_list_with_tasks_edits_message():
+    msg = _sent()
+    with patch("app.bot.handlers.db.get_user_tasks", return_value=[_TASK]):
+        await _render_task_list(msg, 1111)
+    msg.edit_text.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_render_task_list_status_label():
+    msg = _sent()
+    with patch("app.bot.handlers.db.get_user_tasks", return_value=[_TASK]):
+        await _render_task_list(msg, 1111, status="pending")
+    text = msg.edit_text.call_args[0][0]
+    assert "Pending" in text
+
+
+@pytest.mark.asyncio
+async def test_render_task_list_category_label():
+    msg = _sent()
+    with patch("app.bot.handlers.db.get_user_tasks", return_value=[_TASK]):
+        await _render_task_list(msg, 1111, category="work")
+    text = msg.edit_text.call_args[0][0]
+    assert "Work" in text
+
+
+# =============================================================================
+#  cmd_mytasks
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_cmd_mytasks_no_args_no_tasks():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context()
+    with patch("app.bot.handlers.db.get_user_tasks", return_value=[]):
+        await cmd_mytasks(upd, ctx)
+    upd.message.reply_text.assert_called_once()
+    text = upd.message.reply_text.call_args[0][0]
+    assert "No tasks" in text
+
+
+@pytest.mark.asyncio
+async def test_cmd_mytasks_no_args_with_tasks():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context()
+    with patch("app.bot.handlers.db.get_user_tasks", return_value=[_TASK]):
+        await cmd_mytasks(upd, ctx)
+    upd.message.reply_text.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_cmd_mytasks_with_status_arg():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(args=["pending"])
+    with patch("app.bot.handlers.db.get_user_tasks", return_value=[_TASK]) as mock_get:
+        await cmd_mytasks(upd, ctx)
+    mock_get.assert_called_once_with(1111, status="pending", category=None)
+
+
+@pytest.mark.asyncio
+async def test_cmd_mytasks_with_category_arg():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(args=["work"])
+    with patch("app.bot.handlers.db.get_user_tasks", return_value=[_TASK]) as mock_get:
+        await cmd_mytasks(upd, ctx)
+    mock_get.assert_called_once_with(1111, status=None, category="work")
+
+
+@pytest.mark.asyncio
+async def test_cmd_mytasks_unknown_arg_no_filter():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(args=["garbage"])
+    with patch("app.bot.handlers.db.get_user_tasks", return_value=[]) as mock_get:
+        await cmd_mytasks(upd, ctx)
+    mock_get.assert_called_once_with(1111, status=None, category=None)
+
+
+# =============================================================================
+#  cmd_mytask
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_cmd_mytask_no_args_sends_usage():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context()
+    await cmd_mytask(upd, ctx)
+    upd.message.reply_text.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_cmd_mytask_invalid_id_returns():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(args=["abc"])
+    await cmd_mytask(upd, ctx)
+    upd.message.reply_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cmd_mytask_not_found():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(args=["99"])
+    with patch("app.bot.handlers.db.get_task", return_value=None):
+        await cmd_mytask(upd, ctx)
+    upd.message.reply_text.assert_called_once()
+    text = upd.message.reply_text.call_args[0][0]
+    assert "not found" in text
+
+
+@pytest.mark.asyncio
+async def test_cmd_mytask_found_sends_task_card():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(args=["1"])
+    with patch("app.bot.handlers.db.get_task", return_value=_TASK):
+        await cmd_mytask(upd, ctx)
+    upd.message.reply_text.assert_called_once()
+    assert ctx.user_data["current_task_id"] == 1
+
+
+# =============================================================================
+#  callback_task_view
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_callback_task_view_found():
+    upd = _make_cb_update(data="task_view_1", user_id=1111)
+    ctx = _make_context()
+    with patch("app.bot.handlers.db.get_task", return_value=_TASK):
+        await callback_task_view(upd, ctx)
+    upd.callback_query.answer.assert_called_once()
+    assert ctx.user_data["current_task_id"] == 1
+
+
+@pytest.mark.asyncio
+async def test_callback_task_view_not_found():
+    upd = _make_cb_update(data="task_view_99", user_id=1111)
+    ctx = _make_context()
+    with patch("app.bot.handlers.db.get_task", return_value=None):
+        await callback_task_view(upd, ctx)
+    upd.callback_query.answer.assert_called_with("Task not found.", show_alert=True)
+
+
+@pytest.mark.asyncio
+async def test_callback_task_view_invalid_data():
+    upd = _make_cb_update(data="task_view_abc", user_id=1111)
+    ctx = _make_context()
+    await callback_task_view(upd, ctx)
+    upd.callback_query.answer.assert_called_with("Invalid request.", show_alert=True)
+
+
+# =============================================================================
+#  msg_handle_task_done
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_handle_task_done_no_task_id_routes_to_filter():
+    upd = _make_update(text="✅ Done", user_id=1111)
+    ctx = _make_context()
+    with patch("app.bot.handlers.db.get_user_tasks", return_value=[]):
+        await msg_handle_task_done(upd, ctx)
+
+
+@pytest.mark.asyncio
+async def test_handle_task_done_task_not_found():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(user_data={"current_task_id": 1})
+    with patch("app.bot.handlers.db.get_task", return_value=None):
+        await msg_handle_task_done(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+    assert "current_task_id" not in ctx.user_data
+
+
+@pytest.mark.asyncio
+async def test_handle_task_done_already_done():
+    upd = _make_update(user_id=1111)
+    done_task = {**_TASK, "status": "done"}
+    ctx = _make_context(user_data={"current_task_id": 1})
+    with patch("app.bot.handlers.db.get_task", return_value=done_task):
+        await msg_handle_task_done(upd, ctx)
+    text = upd.effective_chat.send_message.call_args[0][0]
+    assert "already" in text
+
+
+@pytest.mark.asyncio
+async def test_handle_task_done_marks_done():
+    upd = _make_update(user_id=1111)
+    done_task = {**_TASK, "status": "done"}
+    ctx = _make_context(user_data={"current_task_id": 1})
+    with patch("app.bot.handlers.db.get_task", side_effect=[_TASK, done_task]), \
+         patch("app.bot.handlers.db.update_task", new_callable=AsyncMock):
+        await msg_handle_task_done(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+    assert ctx.user_data["current_task_id"] == 1
+
+
+# =============================================================================
+#  msg_handle_task_edit
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_handle_task_edit_no_task_id():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context()
+    result = await msg_handle_task_edit(upd, ctx)
+    assert result == ConversationHandler.END
+    upd.effective_chat.send_message.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_task_edit_task_not_found():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(user_data={"current_task_id": 1})
+    with patch("app.bot.handlers.db.get_task", return_value=None):
+        result = await msg_handle_task_edit(upd, ctx)
+    assert result == ConversationHandler.END
+
+
+@pytest.mark.asyncio
+async def test_handle_task_edit_opens_field_selector():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(user_data={"current_task_id": 1})
+    with patch("app.bot.handlers.db.get_task", return_value=_TASK):
+        result = await msg_handle_task_edit(upd, ctx)
+    assert result == EDIT_FIELD
+    assert ctx.user_data["edit_id"] == 1
+
+
+# =============================================================================
+#  msg_handle_task_delete
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_handle_task_delete_no_task_id():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context()
+    await msg_handle_task_delete(upd, ctx)
+    text = upd.effective_chat.send_message.call_args[0][0]
+    assert "No task" in text
+
+
+@pytest.mark.asyncio
+async def test_handle_task_delete_task_not_found():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(user_data={"current_task_id": 1})
+    with patch("app.bot.handlers.db.get_task", return_value=None):
+        await msg_handle_task_delete(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_task_delete_shows_confirm():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(user_data={"current_task_id": 1})
+    with patch("app.bot.handlers.db.get_task", return_value=_TASK):
+        await msg_handle_task_delete(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+    assert ctx.user_data.get("delete_task_id") == 1
+
+
+# =============================================================================
+#  msg_handle_task_delete_confirm
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_handle_delete_confirm_no_task_id():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context()
+    await msg_handle_task_delete_confirm(upd, ctx)
+    text = upd.effective_chat.send_message.call_args[0][0]
+    assert "No task" in text
+
+
+@pytest.mark.asyncio
+async def test_handle_delete_confirm_success():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(user_data={"delete_task_id": 1, "current_task_id": 1})
+    with patch("app.bot.handlers.db.delete_task", return_value=True):
+        await msg_handle_task_delete_confirm(upd, ctx)
+    text = upd.effective_chat.send_message.call_args[0][0]
+    assert "deleted" in text
+    assert "current_task_id" not in ctx.user_data
+
+
+@pytest.mark.asyncio
+async def test_handle_delete_confirm_failure():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(user_data={"delete_task_id": 1})
+    with patch("app.bot.handlers.db.delete_task", return_value=False):
+        await msg_handle_task_delete_confirm(upd, ctx)
+    text = upd.effective_chat.send_message.call_args[0][0]
+    assert "Could not" in text
+
+
+# =============================================================================
+#  msg_handle_task_delete_cancel
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_handle_delete_cancel_no_task_id():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context()
+    await msg_handle_task_delete_cancel(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_delete_cancel_task_not_found():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(user_data={"delete_task_id": 1})
+    with patch("app.bot.handlers.db.get_task", return_value=None):
+        await msg_handle_task_delete_cancel(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_delete_cancel_restores_task_card():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(user_data={"delete_task_id": 1, "current_task_id": 1})
+    with patch("app.bot.handlers.db.get_task", return_value=_TASK):
+        await msg_handle_task_delete_cancel(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+    assert ctx.user_data["current_task_id"] == 1
+    assert "delete_task_id" not in ctx.user_data
+
+
+# =============================================================================
+#  cmd_done
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_cmd_done_no_args_sends_usage():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context()
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await cmd_done(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_cmd_done_invalid_id():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(args=["abc"])
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await cmd_done(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_cmd_done_task_not_found():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(args=["42"])
+    with patch("asyncio.sleep", new_callable=AsyncMock), \
+         patch("app.bot.handlers.db.get_task", return_value=None):
+        await cmd_done(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_cmd_done_marks_task_done():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(args=["1"])
+    done_task = {**_TASK, "status": "done"}
+    with patch("app.bot.handlers.db.get_task", side_effect=[_TASK, done_task]), \
+         patch("app.bot.handlers.db.update_task", new_callable=AsyncMock):
+        await cmd_done(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+    text = upd.effective_chat.send_message.call_args[0][0]
+    assert "done" in text.lower()
+
+
+# =============================================================================
+#  cmd_deletetask
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_cmd_deletetask_no_args():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context()
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await cmd_deletetask(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_cmd_deletetask_invalid_id():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(args=["xyz"])
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await cmd_deletetask(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_cmd_deletetask_task_not_found():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(args=["99"])
+    with patch("asyncio.sleep", new_callable=AsyncMock), \
+         patch("app.bot.handlers.db.get_task", return_value=None):
+        await cmd_deletetask(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_cmd_deletetask_shows_confirm():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context(args=["1"])
+    with patch("app.bot.handlers.db.get_task", return_value=_TASK):
+        await cmd_deletetask(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+    text = upd.effective_chat.send_message.call_args[0][0]
+    assert "Delete" in text or "delete" in text.lower()
+
+
+# =============================================================================
+#  cmd_stats
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_cmd_stats_sends_stats():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context()
+    with patch("app.bot.handlers.db.get_user", return_value=_USER_ROW), \
+         patch("app.bot.handlers.db.get_user_stats", return_value=_STATS), \
+         patch("app.bot.handlers.ai.generate_daily_motivation", return_value="Great job!"):
+        await cmd_stats(upd, ctx)
+    assert upd.effective_chat.send_message.call_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_cmd_stats_user_none():
+    upd = _make_update(user_id=1111)
+    ctx = _make_context()
+    with patch("app.bot.handlers.db.get_user", return_value=None), \
+         patch("app.bot.handlers.db.get_user_stats", return_value=_STATS), \
+         patch("app.bot.handlers.ai.generate_daily_motivation", return_value="Go!"):
+        await cmd_stats(upd, ctx)
+    upd.effective_chat.send_message.assert_called()
+
+
+# =============================================================================
+#  cmd_settimezone
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_cmd_settimezone_sends_keyboard():
+    upd = _make_update()
+    ctx = _make_context()
+    await cmd_settimezone(upd, ctx)
+    upd.effective_chat.send_message.assert_called_once()
+
+
+# =============================================================================
+#  callback_main_menu
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_callback_main_menu_answers_and_sends():
+    upd = _make_cb_update(data="menu_main")
+    ctx = _make_context()
+    await callback_main_menu(upd, ctx)
+    upd.callback_query.answer.assert_called_once()
+    upd.callback_query.message.chat.send_message.assert_called_once()
+
+
+# =============================================================================
+#  unknown_command
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_unknown_command_deletes_message():
+    upd = _make_update()
+    ctx = _make_context()
+    await unknown_command(upd, ctx)
+    upd.message.delete.assert_called_once()
